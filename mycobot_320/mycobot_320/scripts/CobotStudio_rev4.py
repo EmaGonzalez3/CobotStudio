@@ -452,6 +452,49 @@ if ROS_OK:
             self._send_move(qtraj_a_full, robt_name, wobj_name)
             # print(f'Llegamos a:\n{cobot_tb.fkine(self.q_current.copy()[:6])}')
         
+        def MoveJAngles(self, q, spd = 30, unit = 'deg'):
+            """
+            Envía al robot al vector de variables articulares pedido.
+
+            Parameters
+            ----------
+                q : Array(1,6)
+                    Vector de variables articulares
+                spd : int (1 - 100)
+                    Velocidad 
+                unit : str
+                    Unidad de las variables articulares. Puede ser 'rad' o 'deg'.
+            """
+            if unit == 'deg':
+                q_brazo = np.deg2rad(q).tolist()
+            elif unit == 'rad':
+                q_brazo = q
+
+
+            # Respetar la pinza actual
+            gripper_val = self.q_current[6] if self.q_current is not None else 0.0
+            q_goal = np.concatenate([np.array(q_brazo), [gripper_val]])
+            q_start = to_array(self.q_current)[:7]
+            q_end = to_array(q_goal)[:7]
+
+            traj_q = np.vstack([q_start, q_end, q_end])
+
+            traj_arm = traj_q[:, :6]
+            cobot_tb.genTrJoint(traj_arm, np.zeros(traj_arm.shape[0]))
+
+            qtraj_a = cobot_tb.q_ref[::10]
+            q_limit = check_joint_limits(np.rad2deg(qtraj_a), joint_limits)
+            if q_limit:
+                if len(q_limit) == 1:
+                    print(f"⚠️  Valor fuera de límite para el eje {q_limit[0]}")
+                else:
+                    ejes = ", ".join(map(str, q_limit))
+                    print(f"⚠️  Se sobrepasan límites en los ejes: {ejes}")
+
+            qtraj_a_full = [np.concatenate([q, [gripper_val]]) for q in qtraj_a]
+
+            self._send_move(qtraj_a_full)
+        
         def MostrarTerna(self, terna, nombre='terna1'):
             self.node_tf.add_wobj(terna, nombre)
 
@@ -509,7 +552,7 @@ if ROS_OK:
             self.q_current = pad_for_urdf(q_pos)
             # print(f'El q que sale de _send_pose es {self.q_current}')
 
-        def _send_move(self, qtraj_a, robt_name, wobj_name, dt=0.1):
+        def _send_move(self, qtraj_a, robt_name = 'robt', wobj_name = 'wobj', dt=0.1):
             print(f">>> Move: {robt_name} @ {wobj_name}")
 
             # def send_trajectory():
