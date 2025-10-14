@@ -98,6 +98,22 @@ def format_vector(vec, precision=4):
     """Convierte un vector/lista de números en un string formateado y legible."""
     return " ".join([f"{v:.{precision}f}" for v in vec])
 
+def get_qs(nombre_archivo: str):
+    with open(nombre_archivo, "r") as f:
+        lines = f.readlines()
+
+    q_list = []
+    for line in lines:
+        if line.startswith("q_"):
+            q_str = line.split('=')[1].strip()
+            q = eval(q_str)
+            q_list.append(q)
+    
+    return q_list
+
 q_test = [[-52.82, -39.81, -71.63, 6.59, -3.25, 101.6], [-51.41, -62.49, -96.59, 137.28, 6.85, 14.5]]
 
-testCoords(q_test, filename="test_coords_log_v3.csv")
+# testCoords(q_test, filename="test_coords_log_v3.csv")
+
+print(f'q_test = {q_test}')
+print(f'q_leidos = {get_qs("ModelTest_q0.py")}')
