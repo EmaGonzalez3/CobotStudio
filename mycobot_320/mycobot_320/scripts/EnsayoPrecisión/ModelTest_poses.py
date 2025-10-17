@@ -1,6 +1,6 @@
-from CobotStudio_rev4 import RobTarget, BaseRobotController, SimManager, MyCobotController
+from scripts.CobotStudio_rev4 import RobTarget, BaseRobotController, SimManager, MyCobotController
 from spatialmath import SE3
-from DHRobotGT import myCobot320
+from scripts.DHRobotGT import myCobot320
 import time
 import random
 import os
@@ -49,7 +49,7 @@ def q_alcanzables(nombre_base_archivo: str, cant=10):
 
 def visualizar_qs(nombre_base_modulo: str, start = 0):
     """ Visualiza en RViz los vectores q almacenados en el archivo."""
-    nombre_completo_modulo = f"EnsayoPrecisión.Poses.{nombre_base_modulo}"
+    nombre_completo_modulo = f"scripts.EnsayoPrecisión.Poses.{nombre_base_modulo}"
     try:
         print(f"Intentando importar: {nombre_completo_modulo}") 
         modulo_poses = importlib.import_module(nombre_completo_modulo)

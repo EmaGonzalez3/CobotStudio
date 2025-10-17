@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Ejecutar: ModelTest Poses",
+            "type": "python",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            
+            // La ruta del módulo es ahora relativa a la carpeta que abriste
+            // Si 'scripts' es donde está EnsayoPrecisión, la ruta sería así.
+            // Ajusta esto a tu estructura exacta.
+            "module": "scripts.EnsayoPrecisión.ModelTest_poses", 
+            "cwd": "${workspaceFolder}"
+        }
+        // ... otras configuraciones
+    ]
+}

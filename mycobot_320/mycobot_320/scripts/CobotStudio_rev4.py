@@ -1,10 +1,10 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R
-from DHRobotGT import myCobot320, IKineError
+from scripts.DHRobotGT import myCobot320, IKineError
 import time
 import threading
 import itertools
-from pymycobot import MyCobotSocket, MyCobot320Socket
+from pymycobot import MyCobotSocket, MyCobot320Socket, MyCobot320
 from scipy.spatial.transform import Rotation as R
 from abc import ABC, abstractmethod
 from spatialmath import SE3
@@ -17,7 +17,7 @@ try:
     from sensor_msgs.msg import JointState
     from rclpy.executors import MultiThreadedExecutor
     from pynput import keyboard
-    from object_manager_rev1 import ObjectManager
+    from scripts.object_manager_rev1 import ObjectManager
     ROS_OK = True
     print('>>> Librerías de ROS2 importadas correctamente. <<<')
 except ImportError:
