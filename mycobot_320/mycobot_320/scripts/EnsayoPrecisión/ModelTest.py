@@ -9,13 +9,10 @@ from DHRobotGT import myCobot320
 import time
 import csv
 
-
 cobot_tb = myCobot320(rotar_base=True, metros=False)
 # pinza = SE3(-1.71, 106.91, 28.33) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
 pinza = SE3(0, 123, 27.5) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
 pinza_aux = pinza*SE3(0,0,25)
-
-
 
 def testCoords (q_list, filename = "test_coords_log.csv"):
     """ Test del compatibilidad entre el modelo virtual y real para las coordenadas del robot."""
@@ -111,9 +108,8 @@ def get_qs(nombre_archivo: str):
     
     return q_list
 
-q_test = [[-52.82, -39.81, -71.63, 6.59, -3.25, 101.6], [-51.41, -62.49, -96.59, 137.28, 6.85, 14.5]]
+# q_test = [[-52.82, -39.81, -71.63, 6.59, -3.25, 101.6], [-51.41, -62.49, -96.59, 137.28, 6.85, 14.5]]
+q_ensayo = get_qs("ModelTest_q0.py")
+print(f'q_leidos = {q_ensayo}')
 
-# testCoords(q_test, filename="test_coords_log_v3.csv")
-
-print(f'q_test = {q_test}')
-print(f'q_leidos = {get_qs("ModelTest_q0.py")}')
+# testCoords(q_ensayo, filename="test_coords_log_v3.csv")

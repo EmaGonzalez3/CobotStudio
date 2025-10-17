@@ -71,8 +71,3 @@ def visualizar_qs(nombre_archivo: str, start = 0):
 
 visualizar_qs("ModelTest_q5.py", 0)
 # q_alcanzables("ModelTest_q5.py", 2)
-
-"""
-NO
-
-"""
