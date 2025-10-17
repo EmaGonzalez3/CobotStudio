@@ -1,9 +1,10 @@
 from CobotStudio_rev4 import RobTarget, BaseRobotController, SimManager, MyCobotController
 from spatialmath import SE3
-import numpy as np
 from DHRobotGT import myCobot320
 import time
 import random
+import os
+import importlib
 
 joint_limits = {
     "joint_1": (-168.0, 168.0),
@@ -22,15 +23,17 @@ def generar_q_respetando_limites(limits_mult=0.7):
     ]
     return q
 
-def q_alcanzables(nombre_archivo: str, cant=10):
+def q_alcanzables(nombre_base_archivo: str, cant=10):
     """ Genera una lista de vectores q alcanzables según lo visualizado en RViz."""
-    nombre_archivo = nombre_archivo
+
+    directorio_script = os.path.dirname(os.path.abspath(__file__))
+    ruta_completa_archivo = os.path.join(directorio_script, 'Poses', nombre_base_archivo)
 
     contador = 0
-
     rviz = SimManager()
     rviz.GripperState(0)
     time.sleep(1)
+    
     while contador < cant:
         q_random = generar_q_respetando_limites()
         print(q_random)
@@ -38,29 +41,29 @@ def q_alcanzables(nombre_archivo: str, cant=10):
         rviz.VerQ(q_random)
         confirmacion = input("Es alcanzable? (1): ")
         if confirmacion.lower() == '1':
-            with open(nombre_archivo, "a") as f:
+            with open(ruta_completa_archivo, "a") as f:
                 f.write(f"q_{contador} = {q_random}\n")
             contador += 1
 
     rviz.shutdown()
 
-def visualizar_qs(nombre_archivo: str, start = 0):
+def visualizar_qs(nombre_base_modulo: str, start = 0):
     """ Visualiza en RViz los vectores q almacenados en el archivo."""
-    nombre_archivo = nombre_archivo
+    nombre_completo_modulo = f"EnsayoPrecisión.Poses.{nombre_base_modulo}"
+    try:
+        print(f"Intentando importar: {nombre_completo_modulo}") 
+        modulo_poses = importlib.import_module(nombre_completo_modulo)
+    except ImportError:
+        print(f"Error: No se pudo encontrar el módulo '{nombre_completo_modulo}'.")
+        print("Asegúrate de que el nombre del archivo es correcto y que Poses/__init__.py existe.")
+        return
+
+    # Extrae todas las variables que empiezan con 'q_' del módulo importado
+    q_list = [getattr(modulo_poses, var) for var in dir(modulo_poses) if var.startswith('q_')]
 
     rviz = SimManager()
     rviz.GripperState(0)
     time.sleep(1)
-
-    with open(nombre_archivo, "r") as f:
-        lines = f.readlines()
-
-    q_list = []
-    for line in lines:
-        if line.startswith("q_"):
-            q_str = line.split('=')[1].strip()
-            q = eval(q_str)
-            q_list.append(q)
 
     for i, q in enumerate(q_list[start:], start=start):
         print(f"q_{i} = {q}")
@@ -69,5 +72,5 @@ def visualizar_qs(nombre_archivo: str, start = 0):
 
     rviz.shutdown()
 
-visualizar_qs("ModelTest_q5.py", 0)
+visualizar_qs("ModelTest_q5", 0)
 # q_alcanzables("ModelTest_q5.py", 2)
