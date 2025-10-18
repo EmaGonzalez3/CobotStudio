@@ -116,7 +116,7 @@ def registrar_datos(q_list):
 
 def calibrar_servos():
     """Calibrar los servos del cobot real en su posición home."""
-    cob.MoveJAngles(np.zeros(6), 40, 'deg') # Enviamos al cobot al home
+    cob.MoveJAngles(np.zeros(6), 20, 'deg') # Enviamos al cobot al home
     time.sleep(2)
     print(f'Lectura de los encoders:\n{cob.mc.get_encoders()}') # Vemos qué dicen los encoders
     for i in range (6):

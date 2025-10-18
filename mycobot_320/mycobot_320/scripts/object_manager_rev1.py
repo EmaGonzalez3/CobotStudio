@@ -279,7 +279,7 @@ class ObjectManager(Node):
                 obj.marker.pose = obj.pose_fixed
 
             arr.markers.append(obj.marker)
-            self.publish_object_tf(obj.name)
+            # self.publish_object_tf(obj.name)  # Permite ver la terna de cada objeto
 
         # for obj in self.objects.values():
         #     print(obj.name, obj.marker.ns, obj.marker.id)

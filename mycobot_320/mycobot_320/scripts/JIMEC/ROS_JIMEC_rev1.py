@@ -1,6 +1,6 @@
-from CobotStudio_rev4 import  SimManager
+from scripts.CobotStudio_rev4 import  SimManager
 import time
-from object_manager_rev1 import CUBE, CYLINDER, MESH
+from scripts.object_manager_rev1 import CUBE, CYLINDER, MESH
 
 def setup_scene(robot_manager: SimManager):
         """

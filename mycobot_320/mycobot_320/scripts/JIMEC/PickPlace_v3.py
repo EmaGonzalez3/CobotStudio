@@ -1,11 +1,11 @@
-from CobotStudio_rev4 import RobTarget, BaseRobotController, SimManager, MyCobotController, live_pose
+from scripts.CobotStudio_rev4 import RobTarget, BaseRobotController, SimManager, MyCobotController, live_pose
 from spatialmath import SE3
 import numpy as np
-from DHRobotGT import myCobot320
+from scripts.DHRobotGT import myCobot320
 import time
 
 # Importamos la función con la celda robótica
-from ROS_JIMEC_rev1 import setup_scene
+from scripts.JIMEC.ROS_JIMEC_rev1 import setup_scene
 
 def get_robot(mode="sim", **kwargs) -> BaseRobotController:
     if mode == "sim":
