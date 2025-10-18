@@ -1,10 +1,10 @@
-from CobotStudio_rev3 import RobTarget, SimManager, MyCobotController, checkQ, checkPose, pose_to_matrix, joystick_adjust, teach_wobj
+from scripts.CobotStudio_rev4 import RobTarget, SimManager, MyCobotController, checkQ, checkPose, pose_to_matrix, joystick_adjust, teach_wobj
 from spatialmath import SE3
 import numpy as np
 from DHRobotGT import myCobot320
 import time
 from pymycobot import MyCobotSocket
-from object_manager_rev1 import CUBE, SPHERE, MESH
+from scripts.object_manager_rev1 import CUBE, SPHERE, MESH
 import datetime
 
 cobot_tb = myCobot320(rotar_base=True, metros=False)
@@ -146,9 +146,9 @@ def wobjCalc(rviz):
 # movTCP(rviz)
 # pickPlace_v0(rviz)
 # wobjCalc(rviz)
-from Workobjects_v4 import wobj_0
-pinza_aux = SE3(0, 148, 27.5) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
-robt0 = RobTarget(SE3(wobj_0))
-rviz.VerPose(SE3(), robt0, pinza_aux, robt_name='pinza_aux')
-time.sleep(1)
-rviz.shutdown()
+# from Workobjects_v4 import wobj_0
+# pinza_aux = SE3(0, 148, 27.5) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
+# robt0 = RobTarget(SE3(wobj_0))
+# rviz.VerPose(SE3(), robt0, pinza_aux, robt_name='pinza_aux')
+# time.sleep(1)
+# rviz.shutdown()

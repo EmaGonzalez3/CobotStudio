@@ -1,4 +1,4 @@
-from CobotStudio_rev1 import (
+from scripts.CobotStudio_rev4 import (
     RobTarget,
     SimManager,
     MyCobotController,
