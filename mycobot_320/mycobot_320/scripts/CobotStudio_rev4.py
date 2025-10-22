@@ -225,13 +225,7 @@ if ROS_OK:
 
         def add_robt(self, transform: SE3, name: str, reference_frame: str):
             """Agrega un robtarget referido a otra terna: puede ser la base o un wobj, por ejemplo."""
-            # if isinstance(transform, SE3):
-            #     robt_m = transform
-            # else:
-            #     robt_m = SE3(np.array(transform))
-            # robt_m.t = robt_m.t / 1000.0
-            # self.transforms[name] = (robt_m, reference_frame)
-            # print(f'Lo que se pasa como transform\n{transform}')
+            # self.get_logger().info(f"--- TFPublisher.add_robt() fue llamada con name = '{name}' ---")
             robt_m = SE3(np.array(transform))
             robt_m.t = robt_m.t / 1000.0
             self.transforms[name] = (robt_m, reference_frame)
@@ -258,93 +252,19 @@ if ROS_OK:
                 t.transform.rotation.w = quat[3]
 
                 self.br.sendTransform(t)
-
-    def checkPose(robt, wobj = SE3(), tool = SE3(), ternas = False):
-        rclpy.init()
-        node_joint = joint_pub()
-        if ternas:
-            node_TF = TFPublisher()
-            executor = MultiThreadedExecutor()
-            executor.add_node(node_joint)
-            executor.add_node(node_TF)
-            node_TF.add_wobj(wobj, 'wobj')
-            # print(f'robt\n{robt.pose* tool.inv()}')
-            node_TF.add_robt(robt.pose * tool.inv(), 'robt', 'wobj')
-            pinza = SE3(0, 120, 50) * SE3.Rx(-np.pi/2)
-            node_TF.add_robt(tool, 'tool', 'robt')
-
-            # print(f'Tool en checkPose:\n{tool}')
-
-            def send_pose():
-                node_joint.publish_pose(robt, wobj, tool, cobot_tb, joint_names)
-
-            threading.Thread(target=send_pose, daemon=True).start()
-
-            # Ejecutar el executor en un hilo aparte
-            def spin_executor():
-                executor.spin()
-
-            spin_thread = threading.Thread(target=spin_executor)
-            spin_thread.start()
-
-            # Esperar 2 segundos y luego cerrar todo
-            time.sleep(2)
-            node_joint.destroy_node()
-            node_TF.destroy_node()
-            executor.shutdown()
-            rclpy.shutdown()
-            spin_thread.join()
-
-        #     try:
-        #         executor.spin()
-        #         time.sleep(2)
-        #         node_joint.destroy_node()
-        #         node_TF.destroy_node()
-        #         executor.shutdown()
-        #         rclpy.shutdown()
-        #     except KeyboardInterrupt:
-        #         pass
-        #     finally:
-        #         node_joint.destroy_node()
-        #         node_TF.destroy_node()
-        #         executor.shutdown()
-        #         rclpy.shutdown()
-        else:
-            node_joint.publish_pose(robt, wobj, tool, cobot_tb, joint_names)
-        #     # rclpy.shutdown()
-
-    def checkQ(q, tool = SE3(), ternas= False):
-        rclpy.init()
-        node_joint = joint_pub()
-        # node_joint.publish_q(q, joint_names)
-
-        if ternas:
-            node_TF = TFPublisher()
-            executor = MultiThreadedExecutor()
-            executor.add_node(node_joint)
-            executor.add_node(node_TF)
-            node_TF.add_robt(cobot_tb.fkine(q), 'brida', 'base')
-            # pinza = SE3(0, 120, 50) * SE3.Rx(-np.pi/2)
-            pinza = SE3(-1.71381642, 106.90735789, 28.32702833) * SE3.Rx(-np.pi/2)
-            node_TF.add_robt(tool, 'tool', 'brida')
-
-            def send_pose():
-                q_wgripper = np.concatenate([q, np.zeros(6)])  # Agregar ceros para el gripper
-                node_joint.publish_q(q_wgripper, joint_names)
-
-            threading.Thread(target=send_pose, daemon=True).start()
-
-            try:
-                executor.spin()
-            except KeyboardInterrupt:
-                pass
-            finally:
-                node_joint.destroy_node()
-                node_TF.destroy_node()
-                executor.shutdown()
-                rclpy.shutdown()
-        else:
-            node_joint.publish_q(q, joint_names)
+            # En la clase TFPublisher
+        
+        # Puede ser útil a futuro. Provoca un salto en la terna que se puede solucionar congelándola en la posición actual y 
+        # cambiándole el parent a 'base' para que no se intente actualizar con el movimiento de la brida.
+        def remove_transform(self, name: str): 
+            """
+            Elimina una terna específica del diccionario para que deje de publicarse.
+            """
+            if name in self.transforms:
+                del self.transforms[name]
+                self.get_logger().info(f"Terna '{name}' eliminada de la publicación.")
+            else:
+                self.get_logger().warn(f"Se intentó eliminar la terna '{name}', pero no existía.")
 
     class SimManager(BaseRobotController):
         def __init__(self):
@@ -498,14 +418,8 @@ if ROS_OK:
         def MostrarTerna(self, terna, nombre='terna1'):
             self.node_tf.add_wobj(terna, nombre)
 
-        def VerPose(self, wobj, robtarget, tool: SE3 | None = SE3(), wobj_name='wobj1', robt_name='robtarget'):
-            self.node_tf.add_wobj(wobj, wobj_name)
-            self.node_tf.add_robt(robtarget.pose, robt_name, wobj_name)
-
+        def VerPose(self, wobj, robtarget, tool: SE3 | None = SE3(), wobj_name='wobj1', robt_name='targetPose'):
             gripper_val = self.q_current[6] if self.q_current is not None else 0.0
-
-            msg = JointState()
-            msg.name = joint_names
             pose = wobj * robtarget.pose * tool.inv()
             config = robtarget.config
             try:
@@ -513,17 +427,19 @@ if ROS_OK:
             except IKineError as e:
                 print("Error en el problema inverso:", e)
                 return
-            # print(f'El q que sale de ikine es tipo {type(q)} y vale {q}')
+            
             q_full = np.concatenate([q, [gripper_val]])
-            # q_pos = q.tolist() + [0.0]*6
-            # msg.position = q
-            # self.q_current = q.tolist() + [0.0]*6
+
+            self.node_tf.add_wobj(wobj, wobj_name)
+            self.node_tf.add_robt(robtarget.pose, robt_name, wobj_name)
+
+            time.sleep(0.1)
 
             self._send_pose(q_full, robt_name, wobj_name)
         
-        def VerQ(self, q, tool: SE3 | None = SE3()):
-            self.node_tf.add_robt(cobot_tb.fkine(q), 'brida', 'base')
-            self.node_tf.add_robt(tool, 'tool', 'brida')
+        def VerQ(self, q, tool: SE3 | None = SE3(), brida = False):
+            if brida: self.node_tf.add_robt(cobot_tb.fkine(q), 'brida', 'base')
+            self.node_tf.add_robt(tool, 'tool', 'link6')
 
             gripper_val = self.q_current[6] if self.q_current is not None else 0.0
             q_full = np.concatenate([q, [gripper_val]])
@@ -536,12 +452,6 @@ if ROS_OK:
 
             def send_pose():
                 self.node_joint.publish_pose(q_pos, joint_names)
-
-            # pub_thread = threading.Thread(target=send_pose)
-            # pub_thread.start()
-            # pub_thread.join()
-            # self.q_current = pad_for_urdf(q_pos)
-            # print(f'El q que sale de _send_pose es {self.q_current}')
 
             self.node_joint.publish_pose(q_pos, joint_names)
 
@@ -641,6 +551,10 @@ if ROS_OK:
                     print("Entrada inválida, use un número o 'q' para salir.")
                 # for conf in confs:
                 #     print(list(conf))
+        
+        def OcultarTerna(self, terna = 'tool'):
+            """Limpia específicamente la terna 'tool' de la visualización."""
+            self.node_tf.remove_transform(terna)
 
         def shutdown(self):
             print(">>> Apagando SimManager...")

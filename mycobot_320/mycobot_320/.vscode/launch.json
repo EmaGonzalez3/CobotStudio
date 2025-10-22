@@ -3,7 +3,7 @@
     "configurations": [
         {
             "name": "Ejecutar: ModelTest Poses",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "console": "integratedTerminal",
             "justMyCode": true,

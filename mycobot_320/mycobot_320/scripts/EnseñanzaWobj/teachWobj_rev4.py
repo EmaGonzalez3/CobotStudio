@@ -1,22 +1,24 @@
-from CobotStudio_rev4 import (
+from scripts.CobotStudio_rev4 import (
     RobTarget,
     MyCobotController,
     ROS_OK,
     joystick_adjust,
-    teach_wobj
+    pose_to_matrix,
+    teach_wobj,
+    pose_to_matrix
 )
 from spatialmath import SE3
 import numpy as np
-from DHRobotGT import myCobot320
+from scripts.DHRobotGT import myCobot320
 import time
 import datetime
 
 if ROS_OK:
-    from CobotStudio_rev4 import SimManager, checkQ, checkPose
+    from scripts.CobotStudio_rev4 import SimManager
 
 cobot_tb = myCobot320(rotar_base=True, metros=False)
 # pinza = SE3(-1.71, 106.91, 28.33) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
-# pinza_palp = SE3(0, 148, 27.5) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
+pinza_palp = SE3(0, 148, 27.5) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
 pinza = SE3(0, 123, 27.5) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
 pinza_aux = pinza*SE3(0,0,25)
 
@@ -38,9 +40,10 @@ def cheqWobj(wobj, pinza, conf = [1, 1, 1]):
     rviz = SimManager()
     robt0 = RobTarget(SE3(wobj), conf)
     print(robt0.find_valid_configs(pinza, SE3()))
-    # rviz.VerPose(robt0, SE3(), tool = pinza)
+    rviz.VerPose(SE3(), robt0, tool = pinza, wobj_name='wobj_base', robt_name='wobj_calc')
+    time.sleep(2)
     # checkQ(np.zeros(6), pinza, True)
-    rviz.MoveJ(robt0, speed = 30, tool = pinza, wobj = SE3())
+    # rviz.MoveJ(robt0, speed = 30, tool = pinza, wobj = SE3())
     rviz.shutdown()
 
 def save_terna_se3(filename: str, name: str, se3_obj: SE3):
@@ -76,14 +79,79 @@ def save_qvals_py(filename, name, q):
             f.write(f"    {list(map(float, row))},\n")
         f.write("]\n\n")
 
+def verQs(q_list, pinza):
+    "Reproduce en RViz los puntos de enseñanza grabados en el cobot."
+    rviz = SimManager()
+    q_rads = np.deg2rad(q_list)
+    for idx, q in enumerate(q_rads, start=1):
+        if idx <= 3:
+            rviz.MostrarTerna(cobot_tb.fkine(q) * pinza, f'x{idx}')
+        else:
+            rviz.MostrarTerna(cobot_tb.fkine(q) * pinza, f'y{idx-3}')
+        time.sleep(1)
+        rviz.VerQ(q, pinza)
+        time.sleep(1)
+    rviz.shutdown()
+
+def revisarPoses(poses_list, tool):
+    for idx, pose in enumerate(poses_list, 1):
+        print(f'\n------------------------- Pose {idx} -------------------------')
+        coords = pose[6:]
+        print(f'Coords leídas:\n{coords}')
+        angles_deg = pose[:6]
+        print(f'Ángulos leídas:\n{angles_deg}')
+        config = cobot_tb.calc_conf(np.deg2rad(angles_deg)).tolist()
+        pose_SE3 = pose_to_matrix(coords)
+        robt = RobTarget(pose_SE3, config)
+        print(f'Robtarget generado:\n{robt.pose}')
+        q_ikine = cobot_tb.ikine(pose_SE3, config)[0]
+        print(f'Según la tb se alcanza con los ángulos\n{np.round(np.rad2deg(q_ikine), 2)}')
+
+        while True:
+            print("\n¿Qué desea hacer a continuación?")
+            print(f"  1. Ir a Home, esperar 3s, y luego ir a la Pose {idx}.")
+            print(f"  2. Ir directamente a la Pose {idx} desde la posición actual.")
+            print(f"  3. Ir a Home y cerrar.")
+            
+            choice = input("Ingrese su opción (1, 2 o 3): ").strip()
+
+            if choice == '1':
+                print("\n[Opción 1] Moviendo el robot a la posición Home...")
+                cob.MoveJAngles(np.zeros(6), 30, tool, SE3()) # Mover a Home
+                
+                print("Llegó a Home. Esperando 3 segundos...")
+                time.sleep(3)
+                
+                print(f"Moviendo a la Pose {idx}...")
+                cob.MoveJ(robt, 30, tool, SE3()) # Mover al robtarget final
+                break # Salimos del bucle del menú y vamos a la siguiente pose
+
+            elif choice == '2':
+                print(f"\n[Opción 2] Moviendo directamente a la Pose {idx}...")
+                cob.MoveJ(robt, 30, tool, SE3()) # Mover directamente al robtarget
+                break # Salimos del bucle del menú y vamos a la siguiente pose
+
+            
+            if choice == '3':
+                print("\n[Opción 3] Enviando a home y finalizando...")
+                cob.MoveJAngles(np.zeros(6), 30, tool, SE3()) # Mover a Home
+                
+                print("Llegó a Home. Terminando prueba...")
+                return
+
+            else:
+                print("\n*** Opción no válida. Por favor, ingrese 1 o 2. ***")
+        cob.MoveJ(robt, 30, tool, SE3())
+
 """Cobot real"""
-cob = MyCobotController()
+# cob = MyCobotController()
 ## Nombre de los datos a grabar
-iteracion_n = 20
+iteracion_n = 21
 wobj_name = f"wobj{iteracion_n}"
 q_name = f"q_{iteracion_n}"
-## Enseñanza del wobj y recolección de datos
+coord_name = f"coord_{iteracion_n}"
 
+## Enseñanza del wobj y recolección de datos
 # wobj_enseñado, q_enseñados, datos_robot = enseñarCobot(pinza)
 # save_qvals_py("Workobjects_qv7.py", q_name, q_enseñados)
 # save_qvals_py("Workobjects_qcoordsv7.py", q_name, datos_robot)
@@ -91,15 +159,30 @@ q_name = f"q_{iteracion_n}"
 
 ## Importar el wobj y q grabados
 from importlib import import_module
-mod = import_module("Workobjects_v7")
+mod = import_module("scripts.EnseñanzaWobj.Datos.Workobjects_v7")
 workobjects = {}
 workobjects[wobj_name] = getattr(mod, wobj_name)
-print(workobjects[wobj_name])
+# print(workobjects[wobj_name])
 
-mod_q = import_module("Workobjects_qv7")
+mod_q = import_module("scripts.EnseñanzaWobj.Datos.Workobjects_qv7")
 q_grabados = {}
 q_grabados[q_name] = getattr(mod_q, q_name)
-print(q_grabados[q_name])
+# print(q_grabados[q_name])
+
+mod_qcoords = import_module("scripts.EnseñanzaWobj.Datos.Workobjects_qcoordsv7")
+qcoords_grabados = {}
+qcoords_grabados[coord_name] = getattr(mod_qcoords, q_name)
+print(qcoords_grabados[coord_name])
+revisarPoses(qcoords_grabados[coord_name], pinza)
+
+
+## Chequear puntos en RViz
+# verQs(q_grabados[q_name], pinza_palp)
+# cheqWobj(workobjects[wobj_name], pinza_palp, [1, -1, -1])
+q_vals = q_grabados[q_name]
+# wobj_from_q = teach_wobj(q_vals, pinza, 25)
+# cheqWobj(wobj_from_q, pinza_palp, [1, -1, -1])
+
 
 ## Chequear el wobj en el robot físico
 # sendWobj(workobjects[wobj_name], pinza_aux, [1, -1, -1])

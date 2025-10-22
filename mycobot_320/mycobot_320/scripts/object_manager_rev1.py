@@ -81,13 +81,24 @@ class ObjectManager(Node):
             10
         )
 
+        timer_period = 1.0 / freq  # segundos
+        self.timer = self.create_timer(timer_period, self.timer_callback)
+        self.get_logger().info(f"ObjectManager iniciado. Actualizando marcadores a {freq} Hz.")
+
+    def timer_callback(self):
+        """
+        Esta función se ejecuta periódicamente por el timer.
+        Su única tarea es actualizar y publicar las poses de los marcadores.
+        """
+        self._update_markers()
+
     def joint_state_callback(self, msg):
         # Guardamos el último timestamp
         self.last_stamp = msg.header.stamp
         # opcional: debug
         # print(f"Último stamp guardado: {self.last_stamp.sec}.{self.last_stamp.nanosec}")    
-        self._update_markers()
         self._handle_auto_attach(msg)
+        # self._update_markers()
 
     def _handle_auto_attach(self, msg: JointState):
         try:
@@ -124,7 +135,10 @@ class ObjectManager(Node):
         """Encuentra el objeto móvil más cercano al tool_frame."""
         try:
             # Obtener la pose de la herramienta en el marco base
-            tf_tool = self.tf_buffer.lookup_transform(self.base_frame, self.tool_frame, rclpy.time.Time())
+            print(f'Base recibida: {self.base_frame}')
+            print(f'Tipo de variable de base: {type(self.base_frame)}')
+            timeout = rclpy.duration.Duration(seconds=1.0)
+            tf_tool = self.tf_buffer.lookup_transform(self.base_frame, self.tool_frame, rclpy.time.Time(), timeout=timeout)
             tool_pos = np.array([
                 tf_tool.transform.translation.x,
                 tf_tool.transform.translation.y,
@@ -206,10 +220,12 @@ class ObjectManager(Node):
         
         try:
             # Tool en coordenadas de base
+            timeout = rclpy.duration.Duration(seconds=1.0)
             tf_bt = self.tf_buffer.lookup_transform(
                 self.base_frame, 
                 self.tool_frame,#self.tool_frame
-                rclpy.time.Time()
+                rclpy.time.Time(),
+                timeout=timeout
             )
             Tb_tool = tf_to_matrix(tf_bt.transform) # Pasamos a matriz
 
@@ -234,10 +250,12 @@ class ObjectManager(Node):
 
         try:
             # T_base_tool
+            timeout = rclpy.duration.Duration(seconds=1.0)
             tf_bt = self.tf_buffer.lookup_transform(
                 self.base_frame,
                 self.tool_frame, #self.tool_frame
-                rclpy.time.Time()
+                rclpy.time.Time(),
+                timeout=timeout
             )
             Tb_tool = tf_to_matrix(tf_bt.transform)
 
@@ -259,10 +277,12 @@ class ObjectManager(Node):
 
             if obj.attached and obj.rel_pose is not None:
                 try:
+                    timeout = rclpy.duration.Duration(seconds=0.5)
                     tf_bt = self.tf_buffer.lookup_transform(
                         self.base_frame,
                         self.tool_frame,#self.tool_frame
-                        rclpy.time.Time()
+                        rclpy.time.Time(),
+                        timeout=timeout
                     )
                     Tb_tool = tf_to_matrix(tf_bt.transform)
 
