@@ -5,7 +5,7 @@ from pymycobot.mycobot320 import MyCobot320
 from pymycobot.genre import Angle, Coord
 
 sys.path.append(os.path.dirname(__file__))
-from port_setup import setup
+# from port_setup import setup
 
 reset = [153.19, 137.81, -153.54, 156.79, 87.27, 13.62]
 
@@ -80,5 +80,5 @@ if __name__ == "__main__":
     # with open(os.path.dirname(__file__) + "/port.txt") as f:
         # port = f.read().strip().replace("\n", "")
         # print(port)
-    mycobot = setup()
+    mycobot = MyCobot320("/dev/AMA0", 115200)
     test(mycobot)
