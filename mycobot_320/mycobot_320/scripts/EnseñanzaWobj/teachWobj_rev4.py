@@ -12,6 +12,8 @@ import numpy as np
 from scripts.DHRobotGT import myCobot320
 import time
 import datetime
+import pandas as pd
+from tabulate import tabulate
 
 if ROS_OK:
     from scripts.CobotStudio_rev4 import SimManager
@@ -93,17 +95,28 @@ def verQs(q_list, pinza):
         time.sleep(1)
     rviz.shutdown()
 
-def revisarPoses(poses_list, tool):
+def revisarPoses(poses_list, tool = SE3(), func = 'MoveJ'):
+    """
+    Envía al robot físico a las poses almacenadas en una lista. 
+    Mediante un menu se permite ir al home entre poses o moverse directamente entre ellas.
+
+    Args:
+        poses_list (list): Lista de poses a recorrer. Cada pose se lee como [angles, coords] según devuelve el cobot.
+        tool (SE3): Herramienta. Por defecto es nula porque las poses guardadas son en la brida.
+        func (str): `MoveJ` para ir mediante funciones de la toolbox o `sendAngles` mediante la API.
+    """
     for idx, pose in enumerate(poses_list, 1):
         print(f'\n------------------------- Pose {idx} -------------------------')
         coords = pose[6:]
         print(f'Coords leídas:\n{coords}')
         angles_deg = pose[:6]
-        print(f'Ángulos leídas:\n{angles_deg}')
+        print(f'Ángulos leídos:\n{angles_deg}')
         config = cobot_tb.calc_conf(np.deg2rad(angles_deg)).tolist()
         pose_SE3 = pose_to_matrix(coords)
         robt = RobTarget(pose_SE3, config)
-        print(f'Robtarget generado:\n{robt.pose}')
+        print(f'Robtarget generado (conversión de coords del cobot):\n{robt.pose}')
+        POSE_calc = cobot_tb.fkine(np.deg2rad(angles_deg))
+        print(f'POSE_calc - PCD_toolbox(q_cobot):\n{POSE_calc}')
         q_ikine = cobot_tb.ikine(pose_SE3, config)[0]
         print(f'Según la tb se alcanza con los ángulos\n{np.round(np.rad2deg(q_ikine), 2)}')
 
@@ -122,13 +135,26 @@ def revisarPoses(poses_list, tool):
                 print("Llegó a Home. Esperando 3 segundos...")
                 time.sleep(3)
                 
-                print(f"Moviendo a la Pose {idx}...")
-                cob.MoveJ(robt, 30, tool, SE3()) # Mover al robtarget final
+                print(f"Moviendo a la Pose {idx} con el método {func}...")
+                if func == 'MoveJ':
+                    cob.MoveJ(robt, 30, tool, SE3()) # Mover al robtarget final
+                elif func == 'sendCoords':
+                    cob.mc.send_coords(coords, 30, 0)
+                else:
+                    print(f"El método seleccionado {func} no es admisible.")
+                    return
                 break # Salimos del bucle del menú y vamos a la siguiente pose
 
             elif choice == '2':
-                print(f"\n[Opción 2] Moviendo directamente a la Pose {idx}...")
-                cob.MoveJ(robt, 30, tool, SE3()) # Mover directamente al robtarget
+                print(f"\n[Opción 2] Moviendo directamente a la Pose {idx} con el método {func}...")
+
+                if func == 'MoveJ':
+                    cob.MoveJ(robt, 30, tool, SE3())
+                elif func == 'sendCoords':
+                    cob.mc.send_coords(coords, 30, 0)
+                else:
+                    print(f"El método seleccionado {func} no es admisible.")
+                    return
                 break # Salimos del bucle del menú y vamos a la siguiente pose
 
             
@@ -143,43 +169,141 @@ def revisarPoses(poses_list, tool):
                 print("\n*** Opción no válida. Por favor, ingrese 1 o 2. ***")
         cob.MoveJ(robt, 30, tool, SE3())
 
+def analizarPoses(poses_list):
+    """
+    Análisis de poses de enseñanza de wobj, guardando los resultados en una lista.
+
+    Args:
+        poses_list (list): Lista de poses a recorrer.
+
+    Returns:
+        list: Una lista de diccionarios, donde cada diccionario contiene los datos de una pose.
+    """
+    datos_para_tabla = []
+    for idx, pose in enumerate(poses_list, 1):
+        # Extracción de datos como en tu función original
+        POSE_robot = pose[6:]
+        q_robot = pose[:6]
+        q_robot_rad = np.deg2rad(q_robot)
+        
+        # Cálculos
+        config = cobot_tb.calc_conf(np.deg2rad(q_robot)).tolist()
+        POSE_robot_SE3 = pose_to_matrix(POSE_robot)
+        robt = RobTarget(POSE_robot_SE3, config)
+        POSE_calc = cobot_tb.fkine(np.deg2rad(q_robot))
+        q_calc = cobot_tb.ikine(POSE_calc, config)[0]
+        q_robot_recalc = cobot_tb.ikine(POSE_robot_SE3, config)[0]
+
+        opciones_formato = {'precision': 2, 'floatmode': 'fixed', 'suppress_small': True}
+
+        resultado_pose = {
+            "Pose #": idx,
+            "Coords Leídas": np.array2string(np.array(POSE_robot), **opciones_formato),
+            "Ángulos Leídos": np.array2string(np.array(q_robot_rad), **opciones_formato),
+            "Config": str(config),
+            "RobTarget Generado": np.array2string(robt.pose.A.flatten(), **opciones_formato),
+            "POSE_calc (FKine)": np.array2string(POSE_calc.A.flatten(), **opciones_formato),
+            "q_calc (IKine)": np.array2string(q_calc, **opciones_formato),
+            "q_recalc (IKine)": np.array2string(q_robot_recalc, **opciones_formato)
+        }
+        datos_para_tabla.append(resultado_pose)
+        
+    return pd.DataFrame(datos_para_tabla)
+
+def POSESdf():
+    lista_A = getattr(mod_qcoords, 'q_20')
+    lista_B = getattr(mod_qcoords, 'q_21')
+    lista_C = getattr(mod_qcoords, 'q_22')
+    lista_D = getattr(mod_qcoords, 'q_23')
+    lista_E = getattr(mod_qcoords, 'q_24')
+    lista_F = getattr(mod_qcoords, 'q_25')
+    lista_G = getattr(mod_qcoords, 'q_26')
+    mod_qcoords = import_module("scripts.EnseñanzaWobj.Datos.Workobjects_qcoordsv8")
+    lista_H = getattr(mod_qcoords, 'q_30')
+
+
+
+    # Puedes tener cuantas listas quieras
+    todas_mis_poses = {
+        "Caso 20": lista_A,
+        "Caso 21": lista_B,
+        "Caso 22": lista_C,
+        "Caso 23": lista_D,
+        "Caso 24": lista_E,
+        "Caso 25": lista_F,
+        "Caso 26": lista_G,    
+        "Caso 27": lista_H,    
+    }
+
+    # 2. Itera, analiza y recolecta los DataFrames
+    lista_de_dataframes = []
+    for nombre_grupo, poses_list in todas_mis_poses.items():
+        print(f"Analizando el grupo: '{nombre_grupo}'...")
+        
+        # Llama a tu función de siempre
+        df_parcial = analizarPoses_mejorado(poses_list)
+        
+        # Añade la columna identificadora
+        df_parcial['Grupo'] = nombre_grupo
+        
+        # Guarda el DataFrame parcial en la lista
+        lista_de_dataframes.append(df_parcial)
+
+    # 3. Concatena todos los DataFrames en uno solo
+    # ignore_index=True es importante para que el índice final sea continuo (0, 1, 2, 3...)
+    df_final = pd.concat(lista_de_dataframes, ignore_index=True)
+
+    # Opcional: Mueve la columna 'Grupo' al principio para mayor claridad
+    cols = ['Grupo'] + [col for col in df_final if col != 'Grupo']
+    df_final = df_final[cols]
+
+
+    # --- RESULTADOS ---
+    print("\n----------- DataFrame Final Combinado -----------")
+    print(df_final.to_string())
+
+    # Exporta el DataFrame final a un único archivo CSV
+    nombre_archivo_final = 'analisis_completo.csv'
+    df_final.to_csv(nombre_archivo_final, index=False, encoding='utf-8')
+    print(f"\n¡Exportación exitosa! El DataFrame combinado se ha guardado en '{nombre_archivo_final}'.")
+
 """Cobot real"""
 # cob = MyCobotController()
 ## Nombre de los datos a grabar
-iteracion_n = 21
+iteracion_n = 20
 wobj_name = f"wobj{iteracion_n}"
 q_name = f"q_{iteracion_n}"
 coord_name = f"coord_{iteracion_n}"
 
 ## Enseñanza del wobj y recolección de datos
 # wobj_enseñado, q_enseñados, datos_robot = enseñarCobot(pinza)
-# save_qvals_py("Workobjects_qv7.py", q_name, q_enseñados)
-# save_qvals_py("Workobjects_qcoordsv7.py", q_name, datos_robot)
-# save_terna_se3("Workobjects_v7.py", wobj_name, wobj_enseñado)
+# save_qvals_py("Workobjects_qv8.py", q_name, q_enseñados)
+# save_qvals_py("Workobjects_qcoordsv8.py", q_name, datos_robot)
+# save_terna_se3("Workobjects_v8.py", wobj_name, wobj_enseñado)
 
 ## Importar el wobj y q grabados
 from importlib import import_module
-mod = import_module("scripts.EnseñanzaWobj.Datos.Workobjects_v7")
+mod = import_module("scripts.EnseñanzaWobj.Datos.Workobjects_v8")
 workobjects = {}
 workobjects[wobj_name] = getattr(mod, wobj_name)
 # print(workobjects[wobj_name])
 
-mod_q = import_module("scripts.EnseñanzaWobj.Datos.Workobjects_qv7")
+mod_q = import_module("scripts.EnseñanzaWobj.Datos.Workobjects_qv8")
 q_grabados = {}
 q_grabados[q_name] = getattr(mod_q, q_name)
 # print(q_grabados[q_name])
 
-mod_qcoords = import_module("scripts.EnseñanzaWobj.Datos.Workobjects_qcoordsv7")
+mod_qcoords = import_module("scripts.EnseñanzaWobj.Datos.Workobjects_qcoordsv8")
 qcoords_grabados = {}
 qcoords_grabados[coord_name] = getattr(mod_qcoords, q_name)
-print(qcoords_grabados[coord_name])
-revisarPoses(qcoords_grabados[coord_name], pinza)
-
+# print(qcoords_grabados[coord_name])
+# revisarPoses(qcoords_grabados[coord_name], pinza)
+# datos_analizados = analizarPoses_mejorado(qcoords_grabados[coord_name])
 
 ## Chequear puntos en RViz
 # verQs(q_grabados[q_name], pinza_palp)
 # cheqWobj(workobjects[wobj_name], pinza_palp, [1, -1, -1])
-q_vals = q_grabados[q_name]
+# q_vals = q_grabados[q_name]
 # wobj_from_q = teach_wobj(q_vals, pinza, 25)
 # cheqWobj(wobj_from_q, pinza_palp, [1, -1, -1])
 
