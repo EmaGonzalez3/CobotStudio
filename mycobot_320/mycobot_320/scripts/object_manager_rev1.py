@@ -135,10 +135,9 @@ class ObjectManager(Node):
         """Encuentra el objeto móvil más cercano al tool_frame."""
         try:
             # Obtener la pose de la herramienta en el marco base
-            print(f'Base recibida: {self.base_frame}')
-            print(f'Tipo de variable de base: {type(self.base_frame)}')
             timeout = rclpy.duration.Duration(seconds=1.0)
-            tf_tool = self.tf_buffer.lookup_transform(self.base_frame, self.tool_frame, rclpy.time.Time(), timeout=timeout)
+            # tf_tool = self.tf_buffer.lookup_transform(self.base_frame, self.tool_frame, rclpy.time.Time(), timeout=timeout)
+            tf_tool = self.tf_buffer.lookup_transform(self.base_frame, 'tool', rclpy.time.Time(), timeout=timeout)
             tool_pos = np.array([
                 tf_tool.transform.translation.x,
                 tf_tool.transform.translation.y,
