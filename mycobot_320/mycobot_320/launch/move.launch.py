@@ -17,7 +17,7 @@ def generate_launch_description():
         name="model",
         default_value=os.path.join(
             get_package_share_path("mycobot_description"),
-            "urdf/mycobot_320_m5_2022/mycobot_320_m5_2022.urdf"
+            "urdf/mycobot_320_pi_2022/mycobot_320_pi_2022DH.urdf"
         )
     )
     res.append(model_launch_arg)
