@@ -223,7 +223,7 @@ def main(robot: BaseRobotController):
         time.sleep(2)
         robot.MoveJAngles(np.zeros(6), 30)
 
-    ensayo3()
+    ensayo4()
 
 if __name__ == "__main__":
 
