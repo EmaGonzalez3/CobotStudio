@@ -431,7 +431,7 @@ class myCobot320(DHRobotGT):
         conf = np.array(result, dtype=int)
         if redimensionar:
             conf=conf.flatten()
-        return conf
+        return conf.tolist()
     
     def graficar_conf(self, q, conf, limits=np.array([-0.100, 0.300, -0.300, 0.300, 0.000, 0.400])):
     

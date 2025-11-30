@@ -5,29 +5,23 @@ import time
 import datetime
 import threading
 import itertools
-from pymycobot import MyCobotSocket, MyCobot320Socket, MyCobot320
+from pymycobot import MyCobotSocket, MyCobot320
 from scipy.spatial.transform import Rotation as R
 from abc import ABC, abstractmethod
 from spatialmath import SE3
 from pynput import keyboard
-from typing import List, Optional
-import json
-import os
+from pathlib import Path
+import importlib.util
+import inspect
+import sys
 
+# Imports de ROS2
 try:
     from geometry_msgs.msg import TransformStamped
     from tf2_ros import TransformBroadcaster
     import rclpy
     from rclpy.node import Node
     from rclpy.action import ActionClient
-    # --------------- MoveIt! --------------------- #
-    from moveit_msgs.msg import DisplayRobotState, RobotState
-    from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-    from std_msgs.msg import Empty, Header
-    from sensor_msgs.msg import JointState
-    from moveit_msgs.msg import DisplayTrajectory, RobotState
-    from moveit_msgs.srv import ApplyPlanningScene
-    # --------------- MoveIt! --------------------- #
     from builtin_interfaces.msg import Duration
     from rclpy.executors import MultiThreadedExecutor
     from scripts.object_manager_rev1 import ObjectManager
@@ -37,6 +31,17 @@ try:
 except ImportError:
     ROS_OK = False
     print('>>> No se pudieron importar las librerías de ROS2. Funciones de visualización deshabilitadas. <<<')
+    class Node: pass
+
+# Si se importó correctamente lo referido a ROS2, buscamos MoveIt
+if ROS_OK:
+    try:
+        from moveit_msgs.msg import DisplayRobotState, RobotState
+        from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+        from sensor_msgs.msg import JointState
+        MoveIt_OK = True
+    except ImportError:
+        MoveIt_OK = False
 
 cobot_tb = myCobot320(rotar_base=True, metros=False)
 
@@ -78,6 +83,10 @@ class RobTarget:
         self.valid_configs = []
 
     def find_valid_configs(self, tool, wobj):
+        """
+        Analiza todas las configuraciones posibles para un RobTarget con una determinada tool y wobj.
+        Devuelve aquellas que tienen solución analítica, sin verificar colisiones o límites articulares.
+        """
         T_global = wobj * self.pose * tool.inv()
         # Todas las combinaciones posibles de [±1, ±1, ±1]
         configs = list(itertools.product([1, -1], repeat=3))
@@ -97,12 +106,6 @@ class RobTarget:
         else:
             print("Ninguna configuración resuelve la IK para esta pose.")
         
-    def get_SE3(self):
-        """
-        Devuelve la pose como objeto SE3.
-        """
-        return self.pose
-
     def offset(self, dx=0, dy=0, dz=0, rx=0, ry=0, rz=0):
         """
         Aplica una rototraslación al RobTarget respecto al wobj.
@@ -145,6 +148,13 @@ class RobTarget:
         return f"RobTarget(pose=SE3({self.pose.t.tolist()}, rpy={self.pose.rpy(unit='deg').tolist()} deg), config={self.config})"
 
 class BaseRobotController(ABC):
+    def __init__(self, project_path):
+        if project_path:
+            self.project_root = Path(project_path).resolve()
+        else:
+            self.project_root = Path.cwd()
+            
+        print(f"[Init] Project Root: {self.project_root}")
     @abstractmethod
     def MoveJ(self, robt, speed:int = 30, tool=SE3(), wobj=SE3()):
         pass
@@ -155,6 +165,286 @@ class BaseRobotController(ABC):
 
     @abstractmethod
     def GripperState(self, apertura: float, spd: int):
+        pass
+
+    def _resolve_project_path(self, subfolder: str, filename: str, create_dir: bool = False) -> Path:
+        """
+        Resuelve la ruta absoluta basándose en self.project_root.
+        """
+        target_folder = self.project_root / subfolder
+
+        if create_dir:
+            target_folder.mkdir(parents=True, exist_ok=True)
+        if not filename.endswith(".py"):
+            filename += ".py"
+        return target_folder / filename
+    
+    def _load_project_variable(self, subfolder: str, filename: str, var_name: str, verbose: bool = False) -> any:       
+        path = self._resolve_project_path(subfolder, filename, create_dir=False)
+        
+        if not path.exists():
+             raise FileNotFoundError(f"Archivo no encontrado: {path}")
+             
+        spec = importlib.util.spec_from_file_location("mod_dyn", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        
+        if not hasattr(module, var_name):
+            raise AttributeError(f"Variable '{var_name}' no existe en {path.name}")
+        
+        val = getattr(module, var_name)
+
+        # --- LOGGING ELEGANTE ---
+        if verbose:
+            # Intentamos mostrar la ruta relativa para que sea más legible
+            try:
+                display_path = path.relative_to(self.project_root)
+            except ValueError:
+                # Si por alguna razón el archivo está fuera del root, mostramos el nombre solo
+                display_path = path.name
+                
+            # Log conciso: [Carga] Archivo -> Variable (Tipo)
+            type_name = type(val).__name__
+            info_extra = f" (Len: {len(val)})" if hasattr(val, '__len__') else ""
+            
+            print(f"[Load] {display_path} -> '{var_name}' <{type_name}>{info_extra}")
+            
+        return val
+
+        
+    def load_wobj(self, archivo: str, wobj_name: str, tool: SE3 = SE3(), auto_teach: bool = True, q_teach = None) -> SE3:
+        """
+        Intenta cargar un Wobj. Si falla y auto_teach es True, 
+        ofrece al usuario enseñarlo en el momento.
+        
+        Args:
+            archivo: Nombre del archivo .py (sin .py opcional).
+            wobj_name: Nombre de la variable dentro del archivo.
+            tool: Herramienta usada para enseñar (solo si falla la carga).
+            auto_teach: Si True, habilita la pregunta interactiva ante error.
+        """
+        try:
+            # Intentamos cargar usando tu lógica existente
+            wobj = self._load_project_variable("Workobjects", archivo, wobj_name)
+            
+            # Validación de tipo
+            if not isinstance(wobj, SE3):
+                print(f"[Warn] '{wobj_name}' cargado, pero no parece ser un SE3.")
+            else:
+                print(f"[Info] Wobj '{wobj_name}' cargado correctamente.")
+                
+            return wobj
+
+        except (FileNotFoundError, AttributeError) as e:
+            # Si algo falló (no existe archivo o variable)
+            print(f"\n[!] Error al cargar Wobj: {e}")
+            
+            if not auto_teach:
+                raise e # Si desactivamos la ayuda, que falle normal.
+
+            # Interacción con el usuario
+            print(f"¿Deseas ejecutar la rutina de enseñanza para '{wobj_name}' ahora?")
+            resp = input("Escribe 's' para enseñar, o cualquier tecla para cancelar: ").lower().strip()
+            
+            if resp == 's':
+                print(f"--- Iniciando recuperación interactiva para {wobj_name} ---")
+                new_wobj = self.teach_and_save_wobj(
+                    filename=archivo, 
+                    wobj_name=wobj_name, 
+                    tool=tool, 
+                    save_q=True,
+                    q_test = q_teach
+                )
+                return new_wobj
+            else:
+                print("[!] Operación cancelada por el usuario.")
+                raise e # Relanzamos el error original para detener el script
+
+    def load_scene(self, scene_filename: str):
+        """
+        En modo Simulación: Carga y configura la escena desde un archivo .py.
+        En modo Real: No hace nada (se ignora).
+        """
+        pass
+    
+    def load_data(self, subfolder: str, filename: str, var_name: str) -> any:
+        """
+        Carga una variable genérica desde un archivo del proyecto.
+        Útil para cargar configuraciones articulares (Q), diccionarios, etc.
+        """
+        # Al llamar a _load desde aquí, restauramos la profundidad de pila esperada (3)
+        return self._load_project_variable(subfolder, filename, var_name)
+    
+    def _save_aux_q_data(self, folder: str, base_filename: str, var_name: str, q_vals: list, extra_depth: int = 0):
+        """Helper interno para guardar los valores articulares (Q) en un archivo separado."""
+        name_q = base_filename.replace(".py", "") + "_q.py"
+        path_q = self._resolve_project_path(folder, name_q) # Depth 4 pq está dentro de otro helper
+        
+        variable_name_q = f"{var_name}_q"
+        mode = 'a' if path_q.exists() else 'w'
+        
+        try:
+            with open(path_q, mode) as f:
+                if mode == 'w':
+                    f.write(f"# Config Articulares (Q) para {folder}\n\n")
+                f.write(f"# Q Values para: {var_name}\n")
+                f.write(f"{variable_name_q} = [\n")
+                for row in q_vals:
+                    clean_row = [float(x) for x in row]
+                    f.write(f"    {clean_row},\n")
+                f.write("]\n\n")
+            print(f"[Guardado] Q Values -> {path_q.name}")
+        except Exception as e:
+            print(f"[Error] Falló guardado Q en {name_q}: {e}")
+
+    def _save_tcp_definition(self, folder: str, filename: str, var_name: str, tcp_data: tuple, q_vals: list = None):
+        """
+        Guarda un TCP definido por vector de traslación + métricas.
+        Genera un archivo .py que exporta un objeto SE3.Trans().
+        """
+        
+        # Desempaquetado de tu tupla personalizada
+        # p_tool_raw: calculado directo, p_tool_real: corregido con z_aux
+        p_tool_raw, p_tool_real, residuals, ecm, rmse = tcp_data
+
+        if not filename.endswith(".py"): filename += ".py"
+        path_tcp = self._resolve_project_path(folder, filename, create_dir=True)
+        mode = 'a' if path_tcp.exists() else 'w'
+
+        try:
+            with open(path_tcp, mode) as f:
+                if mode == 'w':
+                    f.write(f"# Archivo de definiciones TCP: {folder}\n")
+                    f.write("from spatialmath import SE3\n")
+                    f.write("import numpy as np\n\n")
+
+                # Escribimos las métricas como comentarios para control de calidad
+                f.write(f"# --- Registro: {var_name} ---\n")
+                f.write(f"# Fecha: {datetime.datetime.now().isoformat()}\n")
+                f.write(f"# RMSE (Error Medio Cuadrático): {rmse:.6f} mm\n")
+                f.write(f"# ECM: {ecm:.6f}\n")
+                if hasattr(residuals, 'tolist'): # Por si residuals es array o lista
+                    f.write(f"# Residuales: {residuals.flatten().tolist()}\n")
+                
+                # Guardamos el vector crudo por si acaso
+                raw_str = "[" + ", ".join([f"{val:.6f}" for val in p_tool_raw]) + "]"
+                f.write(f"# Raw calc (sin corrección z_aux): {raw_str}\n")
+
+                # --- LO IMPORTANTE: Guardar el TCP Real como SE3 ---
+                # Usamos p_tool_real que es el que tiene la corrección de la pieza auxiliar
+                t_str = "[" + ", ".join([f"{val:.6f}" for val in p_tool_real]) + "]"
+                
+                f.write(f"{var_name}_t = np.array({t_str})\n")
+                # Creamos un SE3 de pura traslación (identidad en rotación)
+                f.write(f"{var_name} = SE3.Trans({var_name}_t)\n\n")
+
+            print(f"[Guardado] TCP {var_name} (RMSE: {rmse:.4f}) -> {path_tcp.name}")
+
+        except Exception as e:
+            print(f"[Error] Falló guardado TCP en {filename}: {e}")
+
+        # Reutilizamos la lógica para guardar Q
+        if q_vals:
+            self._save_aux_q_data(folder, filename, var_name, q_vals)
+
+    def _save_se3_definition(self, folder: str, filename: str, var_name: str, se3_obj: SE3, q_vals: list = None):
+            path_se3 = self._resolve_project_path(folder, filename, create_dir=True)
+            mode = 'a' if path_se3.exists() else 'w'
+            
+            try:
+                with open(path_se3, mode) as f:
+                    # Escribir cabecera solo si es archivo nuevo
+                    if mode == 'w':
+                        f.write(f"# Archivo de definiciones: {folder}\n")
+                        f.write("from spatialmath import SE3\n")
+                        f.write("import numpy as np\n\n")
+                    
+                    # Formateo de alta precisión (Tu lógica intacta)
+                    R_str = "[\n" + ",\n".join(["    [" + ", ".join([f"{val:.18e}" for val in row]) + "]" for row in se3_obj.R]) + "\n  ]"
+                    t_str = "[" + ", ".join([f"{val:.18e}" for val in se3_obj.t.flatten()]) + "]"
+                    
+                    f.write(f"# Guardado: {datetime.datetime.now().isoformat()}\n")
+                    f.write(f"{var_name}_R = np.array({R_str})\n")
+                    f.write(f"{var_name}_t = np.array({t_str})\n")
+                    f.write(f"{var_name} = SE3.Rt({var_name}_R, {var_name}_t)\n\n")
+                print(f"[Guardado] {folder}/{var_name} -> {path_se3.name}")
+            except Exception as e:
+                print(f"[Error] Falló guardado SE3: {e}")
+
+            # Llamada al helper compartido
+            if q_vals:
+                self._save_aux_q_data(folder, filename, var_name, q_vals)
+
+    def teach_and_save_wobj(self, filename: str, wobj_name: str, tool: SE3 = SE3(), save_q: bool = False, q_test: list = None) -> SE3:
+        """
+        Enseña un Wobj, lo guarda en 'Workobjects/filename.py'.
+        Opcionalmente guarda los q leídos por el cobot en 'Workobjects/filename_q.py'.
+        """
+        # --- 1. ENSEÑANZA FÍSICA ---
+        print("\n" + "="*60)
+        print(f"  ENSEÑANZA DE WOBJ: {wobj_name}")
+        print("="*60 + "\n")
+        
+        # q_vals es una lista de 6 listas (o arrays)
+        q_vals, _ = self.grabar_poses(6, ajuste=True, q_list = q_test)
+        
+        print(f"\n[Calculando] Procesando geometría...")
+        wobj_calculated = teach_wobj(q_vals, tool)
+        print(f"[Resultado] Wobj:\n{wobj_calculated}")
+        # 2. Delegar guardado
+        qs_to_save = q_vals if save_q else None
+        
+        self._save_se3_definition(
+            folder="Workobjects",
+            filename=filename,
+            var_name=wobj_name,
+            se3_obj=wobj_calculated,
+            q_vals=qs_to_save
+            )
+
+        return wobj_calculated
+
+    def teach_and_save_TCP(self, filename: str, tcp_name: str, save_q: bool = False, q_test: list = None) -> SE3:
+        """
+        Enseña un TCP (4 puntos) y lo guarda en carpeta TCPs.
+        """
+        print("\n" + "="*60)
+        print(f"  ENSEÑANZA DE TCP: {tcp_name}")
+        print("="*60 + "\n")
+
+        # 1. Obtener datos físicos (4 puntos para TCP pivot)
+        q_vals, _ = self.grabar_poses(4, ajuste=True, q_list = q_test)
+
+        print(f"\n[Calculando] Procesando geometría TCP...")
+        # Asumo que tienes una función teach_tcp(q_vals)
+        tcp_result_tuple = TCP_4puntos_extendido(q_vals)
+        
+        # Desempaquetamos solo lo necesario para el print y el return
+        _, p_tool_real, _, _, rmse = tcp_result_tuple
+
+        print(f"[Resultado] TCP (Traslación): {p_tool_real}")
+        print(f"[Calidad]   RMSE: {rmse:.5f}")
+
+        # 2. Delegar guardado al helper ESPECÍFICO para TCP
+        qs_to_save = q_vals if save_q else None
+
+        self._save_tcp_definition(
+            folder="TCPs",
+            filename=filename,
+            var_name=tcp_name,
+            tcp_data=tcp_result_tuple,
+            q_vals=qs_to_save
+        )
+
+        # 3. Retornar un objeto SE3 útil para el programa en ejecución
+        # Así puedes hacer: tool = sim.teach_and_save_TCP(...) -> sim.MoveJ(..., tool=tool)
+        return SE3.Trans(p_tool_real)
+
+    @abstractmethod
+    def grabar_poses(self, cantidad, ajuste=False, q_list=None):
+        """
+        Cada hijo DEBE implementar cómo conseguir las poses.
+        """
         pass
 
 if ROS_OK:
@@ -194,39 +484,17 @@ if ROS_OK:
                 msg = JointState()
                 msg.header.stamp = self.get_clock().now().to_msg()
                 msg.name = joint_names
-                msg.position = pad_for_urdf(q)
+                # msg.position = pad_for_urdf(q)
+                msg.position = _normalize_q(q).tolist()
                 self.publisher.publish(msg)
                 # self.get_logger().info(f'q: {msg.position}')
                 time.sleep(dt)
-
-        def publish_pose(self, q, joint_names):
-            msg = JointState()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.name = joint_names
-            msg.position = pad_for_urdf(q)
-            self.publisher.publish(msg)
-            # self.get_logger().info(f'q: {msg.position}')
-            self.q_current = np.array(msg.position)
-            self.q_current_time = msg.header.stamp
-            # print(f'Se envía un q_current de {q}')
-            # print(f'q al final de publish_pose: {self.q_current}')
-
-        def publish_q(self, q, joint_names):
-            msg = JointState()
-            msg.name = joint_names
-            msg.position = pad_for_urdf(q)
-            print(q)
-            msg.header.stamp = self.get_clock().now().to_msg()
-            self.publisher.publish(msg)
-            self.get_logger().info(f'q: {msg.position}')
-            self.q_current = msg.position
-            # print(f'el q_current queda como {self.q_current}')
 
     class TFPublisher(Node):
         # NOTA: RViz mantiene listados todos los frames que escuchó al menos una vez.
         # Si se eliminan ternas de este script, puede que sigan apareciendo en la pestaña TF de RViz.
         # Esto es solo visual; el frame ya no se publica ni influye en la escena.
-        # Para eliminar ternas obsoletas se debe reiniciar RViz. Esto se facilita con el ejecutable Reset Scene
+        # Para eliminar ternas obsoletas se debe reiniciar RViz. Esto se facilita con el script reset_scene.
 
         def __init__(self):
             super().__init__('multi_tf_publisher')
@@ -243,7 +511,8 @@ if ROS_OK:
             self.transforms[name] = (wobj_m, 'base')
 
         def add_robt(self, transform: SE3, name: str, reference_frame: str):
-            """Agrega un robtarget referido a otra terna: puede ser la base o un wobj, por ejemplo."""
+            """Agrega un robtarget referido a otra terna: puede ser 'base' o un wobj, por ejemplo."""
+
             # self.get_logger().info(f"--- TFPublisher.add_robt() fue llamada con name = '{name}' ---")
             robt_m = SE3(np.array(transform))
             robt_m.t = robt_m.t / 1000.0
@@ -271,7 +540,6 @@ if ROS_OK:
                 t.transform.rotation.w = quat[3]
 
                 self.br.sendTransform(t)
-            # En la clase TFPublisher
         
         # Puede ser útil a futuro. Provoca un salto en la terna que se puede solucionar congelándola en la posición actual y 
         # cambiándole el parent a 'base' para que no se intente actualizar con el movimiento de la brida.
@@ -297,130 +565,43 @@ if ROS_OK:
             self.get_logger().info("Visualizador de estado del robot listo.")
 
         def publish_pose(self, joint_positions):
-            """ Publica una pose articular para que el 'robot naranja' salte a ella. """
+            """ Publica una pose articular para que el goal state de MotionPlanning (robot naranja) salte a ella. """
             if len(joint_positions) != len(self.ARM_JOINT_NAMES):
                 self.get_logger().error(f"Error: Se esperaban {len(self.ARM_JOINT_NAMES)} posiciones, pero se recibieron {len(joint_positions)}.")
                 return
 
-            # 1. Crear el mensaje JointState
+            # Crear el mensaje JointState
             joint_state_msg = JointState()
             joint_state_msg.header.stamp = self.get_clock().now().to_msg()
             joint_state_msg.name = self.ARM_JOINT_NAMES
             joint_state_msg.position = [float(q) for q in joint_positions]
 
-            # 2. Embeberlo en un mensaje RobotState
+            # Colocarlo en un mensaje RobotState
             robot_state_msg = RobotState()
             robot_state_msg.joint_state = joint_state_msg
 
-            # 3. Embeberlo en el mensaje final DisplayRobotState
+            # Armado del mensaje final DisplayRobotState
             display_robot_state_msg = DisplayRobotState()
             display_robot_state_msg.state = robot_state_msg
 
-            # 4. Publicar
+            # Publicación
             self.publisher.publish(display_robot_state_msg)
             self.get_logger().info(f"Publicando estado de visualización para el robot naranja.")
 
-    class JointActionClient(Node):
-        def __init__(self, joint_names_ordered=joint_names):
-            super().__init__('joint_action_client')
-            
-            # --- CAMBIO FUNDAMENTAL ---
-            # Creamos un cliente de acción, no un publicador
-            self._action_client = ActionClient(
-                self,
-                FollowJointTrajectory,
-                '/arm_controller/follow_joint_trajectory' # El nombre de la acción que encontramos
-            )
-            # --------------------------
-
-            # La subscripción a /joint_states sigue siendo útil para leer el estado inicial
-            self.create_subscription(
-                JointState,
-                '/joint_states',
-                self.joint_state_callback,
-                10
-            )
-
-            self.q_current = None
-            self.ARM_JOINT_NAMES = joint_names_ordered
-
-        def joint_state_callback(self, msg):
-            # Esta lógica ya está validada y es correcta. Reordena el estado.
-            if self.q_current is not None: # Solo lo hacemos una vez para evitar spam
-                return
-                
-            position_map = {name: pos for name, pos in zip(msg.name, msg.position)}
-            ordered_positions = [position_map.get(name, 0.0) for name in self.ARM_JOINT_NAMES]
-            self.q_current = np.array(ordered_positions)
-            self.get_logger().info(f"Estado inicial de articulaciones recibido y ordenado: {self.q_current}")
-
-        def send_trajectory(self, trajectory_points, joint_names, dt=0.1):
-            self.get_logger().info("Esperando al servidor de acción...")
-            self._action_client.wait_for_server()
-
-            # --- CONSTRUCCIÓN DEL MENSAJE DE OBJETIVO (GOAL) ---
-            goal_msg = FollowJointTrajectory.Goal()
-            
-            # El mensaje de trayectoria ahora va *dentro* del mensaje de objetivo
-            traj_msg = JointTrajectory()
-            traj_msg.header.stamp = self.get_clock().now().to_msg()
-            traj_msg.joint_names = joint_names
-
-            total_time = 0.0
-            for q_point in trajectory_points:
-                point = JointTrajectoryPoint()
-                point.positions = q_point
-                total_time += dt
-                point.time_from_start = Duration(sec=int(total_time), nanosec=int((total_time % 1) * 1e9))
-                traj_msg.points.append(point)
-
-            goal_msg.trajectory = traj_msg
-            # ----------------------------------------------------
-
-            self.get_logger().info('Enviando objetivo de trayectoria al servidor de acción...')
-
-            # Enviamos el objetivo de forma asíncrona
-            self._send_goal_future = self._action_client.send_goal_async(
-                goal_msg,
-                feedback_callback=self.feedback_callback)
-
-            self._send_goal_future.add_done_callback(self.goal_response_callback)
-
-        def goal_response_callback(self, future):
-            goal_handle = future.result()
-            if not goal_handle.accepted:
-                self.get_logger().info('El objetivo fue rechazado :(')
-                return
-
-            self.get_logger().info('El objetivo fue aceptado :)')
-            self._get_result_future = goal_handle.get_result_async()
-            self._get_result_future.add_done_callback(self.get_result_callback)
-
-        def get_result_callback(self, future):
-            result = future.result().result
-            self.get_logger().info(f'Resultado: {result.error_code}') # ERROR_CODE 0 es éxito
-
-        def feedback_callback(self, feedback_msg):
-            feedback = feedback_msg.feedback
-            # Puedes imprimir el feedback si quieres ver el progreso en tiempo real
-            # self.get_logger().info(f'Feedback recibido: {feedback.actual.positions}')
-
     class SimManager(BaseRobotController):
-        def __init__(self):
+        def __init__(self, project_path=None):
+            super().__init__(project_path=project_path)
             # Inicializamos rclpy solo una vez
             rclpy.init()
             self.node_tf = TFPublisher()
             self.node_joint = joint_pub()
-            # self.node_joint = JointCommandPublisher()
             self.node_obj = ObjectManager()
 
             self.ARM_JOINT_NAMES = joint_names[:6]
             self.ARM_JOINT_NAMES_FULL = joint_names
-            # self.node_joint = JointActionClient(self.ARM_JOINT_NAMES)
-            self.node_visualizer = RobotStateVisualizer(self.ARM_JOINT_NAMES)
-            from scripts.MoveItAdapter import MoveItAdapter
 
-            self.moveit_adapter = MoveItAdapter()
+            from scripts.MoveItAdapter import MoveItAdapter
+            self.moveit_adapter = MoveItAdapter(project_path=self.project_root)
             self.moveit_adapter.simmanager_ref = self
 
             # Publicamos q = 0 inicial
@@ -435,7 +616,6 @@ if ROS_OK:
             self.executor.add_node(self.node_joint)
             self.executor.add_node(self.node_obj)
             self.executor.add_node(self.moveit_adapter)
-            # self.executor.add_node(self.node_visualizer)
 
             # Arrancamos el executor en un hilo aparte
             self.executor_thread = threading.Thread(target=self.executor.spin, daemon=True)
@@ -458,84 +638,92 @@ if ROS_OK:
 
             print(">>> SimManager iniciado")
 
-        def ShowPose(self, q):
-            """
-            'Teletransporta' el robot de planificación (naranja) a la pose articular 'q'.
-            Ideal para comprobaciones visuales y de colisión sin mover el robot real.
-
-            :param q: Una lista o array de 6 posiciones articulares.
-            """
-            print(f">>> Visualizando pose: {q}")
-            self.node_visualizer.publish_pose(q)
-
         def MoveJ(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3(), wobj_name='wobj1', robt_name='robtarget'):
             self.node_tf.add_wobj(wobj, wobj_name)
             self.node_tf.add_robt(robtarget.pose, robt_name, wobj_name)
-            # self.node_tf.add_robt(tool, 'TCP', 'link6')
             self.node_tf.add_robt(tool, 'tool', 'link6')
 
 
             # La cinemática inversa devuelve 6 ejes, sin la pinza
             pose_calc = wobj * robtarget.pose * tool.inv()
-            q_brazo = cobot_tb.ikine(pose_calc, robtarget.config)[0]
+            q_goal_arm = cobot_tb.ikine(pose_calc, robtarget.config)[0] # Devuelve 6 ejes
 
-            q_start = self.node_joint.q_current
+            # 3. Planificación
+            # Usamos _normalize_q para garantizar que q_current sea array y tomar solo los 6 primeros
+            q_start_arm = self._normalize_q(self.q_current)[:6]
+            
+            # Generar puntos clave (Start -> End -> End)
+            traj_keypoints = np.vstack([q_start_arm, q_goal_arm, q_goal_arm])
+            cobot_tb.genTrJoint(traj_keypoints, np.zeros(traj_keypoints.shape[0]))
 
-            # Respetar la pinza actual
-            gripper_val = self.q_current[6] if self.q_current is not None else 0.0
-            q_goal = np.concatenate([np.array(q_brazo), [gripper_val]])
-            q_start = to_array(self.q_current)[:7]   # <--- forzar 7
-            q_end = to_array(q_goal)[:7] 
+            # Subsampling de la trayectoria (solo brazo)
+            traj_arm_subsampled = cobot_tb.q_ref[::15]
 
-            traj_q = np.vstack([q_start, q_end, q_end])
-            # traj_q = np.vstack([q_start, q_brazo, q_brazo])
+            # 4. Ejecución (Delegada al helper maestro)
+            self._execute_arm_trajectory(traj_arm_subsampled, robt_name, wobj_name)
+            # q_brazo = cobot_tb.ikine(pose_calc, robtarget.config)[0]
 
-            traj_arm = traj_q[:, :6]
-            cobot_tb.genTrJoint(traj_arm, np.zeros(traj_arm.shape[0]))
+            # q_start = self.node_joint.q_current
 
-            qtraj_a = cobot_tb.q_ref[::15]
-            q_limit = check_joint_limits(np.rad2deg(qtraj_a), joint_limits)
-            if q_limit:
-                if len(q_limit) == 1:
-                    print(f"⚠️  Valor fuera de límite para el eje {q_limit[0]}")
-                else:
-                    ejes = ", ".join(map(str, q_limit))
-                    print(f"⚠️  Se sobrepasan límites en los ejes: {ejes}")
+            # # Respetar la pinza actual
+            # gripper_val = self.q_current[6] if self.q_current is not None else 0.0
+            # q_goal = np.concatenate([np.array(q_brazo), [gripper_val]])
+            # q_start = to_array(self.q_current)[:7]   # <--- forzar 7
+            # q_end = to_array(q_goal)[:7] 
 
-            qtraj_a_full = [np.concatenate([q, [gripper_val]]) for q in qtraj_a]
+            # traj_q = np.vstack([q_start, q_end, q_end])
 
-            # self._send_move(qtraj_a.tolist(), robt_name, wobj_name, dt=0.1)
-            self._send_move(qtraj_a_full, robt_name, wobj_name)
+            # traj_arm = traj_q[:, :6]
+            # cobot_tb.genTrJoint(traj_arm, np.zeros(traj_arm.shape[0]))
+
+            # qtraj_a = cobot_tb.q_ref[::15]
+            # q_limit = check_joint_limits(np.rad2deg(qtraj_a), joint_limits)
+            # if q_limit:
+            #     if len(q_limit) == 1:
+            #         print(f"⚠️  Valor fuera de límite para el eje {q_limit[0]}")
+            #     else:
+            #         ejes = ", ".join(map(str, q_limit))
+            #         print(f"⚠️  Se sobrepasan límites en los ejes: {ejes}")
+
+            # qtraj_a_full = [np.concatenate([q, [gripper_val]]) for q in qtraj_a]
+
+            # self._send_move(qtraj_a_full, robt_name, wobj_name)
 
         def MoveC(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3(), wobj_name='wobj1', robt_name='robtarget'):
             self.node_tf.add_wobj(wobj, wobj_name)
             self.node_tf.add_robt(robtarget.pose, robt_name, wobj_name)
             # self.node_tf.add_robt(tool, 'TCP', 'link6')
-            # pinza = SE3(-1.71381642, 106.90735789, 28.32702833) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
             self.node_tf.add_robt(tool, 'tool', 'link6')
-
+            print(f'DEBUG post ternas')
             pose_goal = wobj * robtarget.pose * tool.inv()
-            q_gripper = self.q_current[6] if self.q_current is not None else 0.0
-            pose_start = cobot_tb.fkine(self.q_current.copy()[:6])
-            # q_end = np.array(pose_goal)
-            # traj_q = np.vstack([pose_start, pose_goal, pose_goal])
-            # print(f'Pose start:\n{pose_start}')
-            # print(f'Pose goal:\n{pose_goal}')
+            q_start_arm = self._normalize_q(self.q_current)[:6]
+            pose_start = cobot_tb.fkine(q_start_arm)
 
-            cobot_tb.genTrCart([pose_start, pose_goal, pose_goal], 0*np.ones(3), conf = robtarget.config)
-            # cobot_tb.genTrCart([pose_a, pose_b, pose_b], 0*np.ones(3), conf=config_ros)
-            qtraj_a = cobot_tb.q_ref[::10]
+            print(f'DEBUG Pre generación')
+            # Generación Cartesiana
+            cobot_tb.genTrCart([pose_start, pose_goal, pose_goal], 0*np.ones(3), conf=robtarget.config)
+            traj_arm_subsampled = cobot_tb.q_ref[::10]
+            print(f'DEBUG Post generación')
 
-            q_limit = check_joint_limits(np.rad2deg(qtraj_a), joint_limits)
-            if q_limit:
-                if len(q_limit) == 1:
-                    print(f"⚠️  Valor fuera de límite para el eje {q_limit[0]}")
-                else:
-                    ejes = ", ".join(map(str, q_limit))
-                    print(f"⚠️  Se sobrepasan límites en los ejes: {ejes}")
-            qtraj_a_full = [np.concatenate([q, [q_gripper]]) for q in qtraj_a]
+            self._execute_arm_trajectory(traj_arm_subsampled, robt_name, wobj_name)
+            # pose_start = cobot_tb.fkine(self.q_current.copy()[:6])
+            # q_gripper = self.q_current[6] if self.q_current is not None else 0.0
+            # # print(f'Pose start:\n{pose_start}')
+            # # print(f'Pose goal:\n{pose_goal}')
 
-            self._send_move(qtraj_a_full, robt_name, wobj_name)
+            # cobot_tb.genTrCart([pose_start, pose_goal, pose_goal], 0*np.ones(3), conf = robtarget.config)
+            # qtraj_a = cobot_tb.q_ref[::10]
+
+            # q_limit = check_joint_limits(np.rad2deg(qtraj_a), joint_limits)
+            # if q_limit:
+            #     if len(q_limit) == 1:
+            #         print(f"⚠️  Valor fuera de límite para el eje {q_limit[0]}")
+            #     else:
+            #         ejes = ", ".join(map(str, q_limit))
+            #         print(f"⚠️  Se sobrepasan límites en los ejes: {ejes}")
+            # qtraj_a_full = [np.concatenate([q, [q_gripper]]) for q in qtraj_a]
+
+            # self._send_move(qtraj_a_full, robt_name, wobj_name)
             # print(f'Llegamos a:\n{cobot_tb.fkine(self.q_current.copy()[:6])}')
         
         def MoveJAngles(self, q, spd = 30, unit = 'deg'):
@@ -556,115 +744,92 @@ if ROS_OK:
             elif unit == 'rad':
                 q_brazo = q
 
-
-            # Respetar la pinza actual
-            gripper_val = self.q_current[6] if self.q_current is not None else 0.0
-            q_goal = np.concatenate([np.array(q_brazo), [gripper_val]])
-            q_start = to_array(self.q_current)[:7]
-            q_end = to_array(q_goal)[:7]
-
-            traj_q = np.vstack([q_start, q_end, q_end])
-
-            traj_arm = traj_q[:, :6]
-            cobot_tb.genTrJoint(traj_arm, np.zeros(traj_arm.shape[0]))
-
-            qtraj_a = cobot_tb.q_ref[::10]
-            q_limit = check_joint_limits(np.rad2deg(qtraj_a), joint_limits)
-            if q_limit:
-                if len(q_limit) == 1:
-                    print(f"⚠️  Valor fuera de límite para el eje {q_limit[0]}")
-                else:
-                    ejes = ", ".join(map(str, q_limit))
-                    print(f"⚠️  Se sobrepasan límites en los ejes: {ejes}")
-
-            qtraj_a_full = [np.concatenate([q, [gripper_val]]) for q in qtraj_a]
-
-            self._send_move(qtraj_a_full)
+            q_start_arm = self._normalize_q(self.q_current)[:6]
         
-        def MostrarTerna(self, terna, nombre='terna1'):
-            self.node_tf.add_wobj(terna, nombre)
+            traj_keypoints = np.vstack([q_start_arm, q_brazo, q_brazo])
+            cobot_tb.genTrJoint(traj_keypoints, np.zeros(traj_keypoints.shape[0]))
+            
+            traj_arm_subsampled = cobot_tb.q_ref[::10]
 
-        def VerPose(self, wobj, robtarget, tool: SE3 | None = SE3(), wobj_name='wobj1', robt_name='robt1'):
-            gripper_val = self.q_current[6] if self.q_current is not None else 0.0
+            self._execute_arm_trajectory(traj_arm_subsampled, "MoveJAngles", "JointSpace")
+            # # Respetar la pinza actual
+            # gripper_val = self.q_current[6] if self.q_current is not None else 0.0
+            # q_goal = np.concatenate([np.array(q_brazo), [gripper_val]])
+            # q_start = to_array(self.q_current)[:7]
+            # q_end = to_array(q_goal)[:7]
+
+            # traj_q = np.vstack([q_start, q_end, q_end])
+
+            # traj_arm = traj_q[:, :6]
+            # cobot_tb.genTrJoint(traj_arm, np.zeros(traj_arm.shape[0]))
+
+            # qtraj_a = cobot_tb.q_ref[::10]
+            # q_limit = check_joint_limits(np.rad2deg(qtraj_a), joint_limits)
+            # if q_limit:
+            #     if len(q_limit) == 1:
+            #         print(f"⚠️  Valor fuera de límite para el eje {q_limit[0]}")
+            #     else:
+            #         ejes = ", ".join(map(str, q_limit))
+            #         print(f"⚠️  Se sobrepasan límites en los ejes: {ejes}")
+
+            # qtraj_a_full = [np.concatenate([q, [gripper_val]]) for q in qtraj_a]
+
+            # self._send_move(qtraj_a_full)
+        
+        def MostrarTerna(self, terna, nombre='terna1', ref = SE3()):
+            """
+            Muestra en RViz una terna dada por un objeto SE3 definida respecto a `ref`.
+            """
+            self.node_tf.add_wobj(ref*terna, nombre)
+
+        def VerPose(self, robtarget, tool: SE3 | None = SE3(), wobj: SE3 = SE3(), wobj_name='wobj1', robt_name='robt1'):
+            # gripper_val = self.q_current[6] if self.q_current is not None else 0.0
             pose = wobj * robtarget.pose * tool.inv()
             config = robtarget.config
             try:
-                q = cobot_tb.ikine(pose, config)[0]
+                q_sol = cobot_tb.ikine(pose, config)[0]
             except IKineError as e:
                 print("Error en el problema inverso:", e)
                 return
             
-            q_full = np.concatenate([q, [gripper_val]])
+            # q_full = np.concatenate([q, [gripper_val]])
 
             self.node_tf.add_wobj(wobj, wobj_name)
             self.node_tf.add_robt(robtarget.pose, robt_name, wobj_name)
-
+            q_arm_target = np.array([q_sol]) 
+        
+            self._execute_arm_trajectory(q_arm_target, robt_name, wobj_name)
             time.sleep(0.1)
 
-            self._send_pose(q_full, robt_name, wobj_name)
+            # self._send_move([q_full], robt_name, wobj_name)
         
         def VerQ(self, q, tool: SE3 | None = SE3(), brida = False):
+            # gripper_val = self.q_current[6] if self.q_current is not None else 0.0
+            # q_full = np.concatenate([q, [gripper_val]])
+
+            q_input = _normalize_q(q)
+            q_arm = q_input[:6]
+
             if brida: self.node_tf.add_robt(cobot_tb.fkine(q), 'brida', 'base')
-            time.sleep(1)
             self.node_tf.add_robt(tool, 'tool', 'link6')
-            time.sleep(1)
+            time.sleep(0.1)
 
-            gripper_val = self.q_current[6] if self.q_current is not None else 0.0
-            q_full = np.concatenate([q, [gripper_val]])
-
-            # msg = JointState()
-            # msg.name = joint_names
-            self._send_pose(q_full)
-
-        def _send_pose(self, q_pos, robt_name = 'robt', wobj_name = 'wobj'):
-
-            def send_pose():
-                self.node_joint.publish_pose(q_pos, joint_names)
-
-            self.node_joint.publish_pose(q_pos, joint_names)
-
-            # Procesar callbacks pendientes para actualizar q_current
-            rclpy.spin_once(self.node_joint, timeout_sec=0.01)
-
-            # Asegurar que el estado local refleje la posición enviada
-            self.q_current = pad_for_urdf(q_pos)
-            # print(f'El q que sale de _send_pose es {self.q_current}')
+            q_arm_target = np.array([q_arm])
+            self._execute_arm_trajectory(q_arm_target, "VerQ", "JointSpace")
+            # self._send_move([q_full])
 
         def _send_move(self, qtraj_a, robt_name = 'robt', wobj_name = 'wobj', dt=0.1):
             print(f">>> Move: {robt_name} @ {wobj_name}")
 
-            # def send_trajectory():
-            #     self.node_joint.publish_trajectory(qtraj_a, joint_names, dt=0.1)
-
-            # pub_thread = threading.Thread(target=send_trajectory)
-            # pub_thread.start()
-            # pub_thread.join()
             self.node_joint.publish_trajectory(qtraj_a, joint_names, dt)
-            # self.node_joint.send_trajectory(qtraj_a, joint_names, dt)
-            # self.q_current = qtraj_a[-1].copy()
 
-            # for q in qtraj_a:
-            #     # Publicar cada punto de la trayectoria
-            #     self.node_joint.publish_pose(q, joint_names)
-
-            #     # Procesar callbacks pendientes para mantener q_current actualizado
-            #     rclpy.spin_once(self.node_joint, timeout_sec=0.001)
-
-            #     # Actualizar q_current local
-            #     self.q_current = pad_for_urdf(q)
-
-            #     # Espera para simular tiempo de trayectoria
-            #     time.sleep(dt)
-
-            if qtraj_a:
+            if len(qtraj_a) > 0:
                 self.q_current = qtraj_a[-1].copy()
-
-            # print(f'Trayectoria enviada. Objetivo final =\n{self.q_current}')
 
             # print(f'Trayectoria finalizada. q_current =\n{self.q_current}')
         
-        def get_current_q(self, prefer_gripper=False, timeout=2.0):
-            """Devuelve q_current ordenado como np.array o None si timeout."""
+        def get_current_q(self, prefer_gripper=False, timeout=2.0, info=False, tool = 1):
+            """Devuelve q_current ordenado como np.array o None si timeout. Útil cuando se mueve al robot con MotionPlanning."""
             t0 = time.time()
             target_len = len(self.ARM_JOINT_NAMES) + (1 if prefer_gripper else 0)  # si ARM_JOINT_NAMES=6
             while time.time() - t0 < timeout:
@@ -677,17 +842,20 @@ if ROS_OK:
                     else:
                         names = self.ARM_JOINT_NAMES
                     ordered = [position_map.get(n, 0.0) for n in names]
+
+                    if info:
+                        robt = robt_from_q(ordered[:6], tool)
+                        print(f'robt = {robt}')
+                        return np.array(list(ordered)[:len(self.ARM_JOINT_NAMES)]), robt
                     return np.array(ordered)
                 
                 q = getattr(self.node_joint, "q_current", None)
                 if q is not None:
                     if prefer_gripper:
                         # devolver hasta 7
-                        return np.array(list(q)[:target_len])
-                    else:
+                        return np.array(list(q)[:target_len]) 
+                    else:                      
                         return np.array(list(q)[:len(self.ARM_JOINT_NAMES)])
-                # if q is not None and len(q) >= len(self.ARM_JOINT_NAMES):
-                #     return np.array(q)[:len(self.ARM_JOINT_NAMES)]
                 time.sleep(0.05)
             # timeout
             self.node_joint.get_logger().warning("get_current_q: timeout esperando joint_states")
@@ -701,20 +869,24 @@ if ROS_OK:
                 apertura: Apertura porcentual de la pinza.
             """
             # self.node_tf.add_robt(tool, 'tool', 'link6')
-            # print(f'Posición antes de mover_pinza: {self.q_current}')
             if not (0 <= apertura <= 100):
                 raise ValueError("La apertura debe estar entre 0 y 100%.")
             
             # Copiar el estado actual para modificar solo gripper_controller
-            q_actual = to_array(self.q_current)
+            # q_actual = to_array(self.q_current)
 
             # Mapear apertura [0,100] a rango [-0.7, 0.3]
-            q_actual[6] = apertura / 100 - 0.7
-            # print(f'q_actual = {q_actual}')
+            # q_actual[6] = apertura / 100 - 0.7
+            val_gripper = apertura / 100 - 0.7
+            # msg = JointState()
+            # msg.name = joint_names
+            # self._send_move([q_actual])
 
-            msg = JointState()
-            msg.name = joint_names
-            self._send_pose(q_actual)
+            q_full = self._normalize_q(self.q_current)
+            q_full[6] = val_gripper # Índice 6
+
+            # Enviar como movimiento de un solo punto
+            self._send_move([q_full], "Gripper", "Tool")
         
         def testPose(self, robt, tool, wobj):
             confs = robt.find_valid_configs(tool, wobj)
@@ -723,7 +895,6 @@ if ROS_OK:
             while True:
                 print("\n--- Menú de configuraciones ---")
                 for i, conf in enumerate(confs, start = 1):
-                    # print(f"{i}: {conf}")
                     marker = " *" if conf == last_conf else ""
                     print(f"{i}: {conf}{marker}")
 
@@ -733,7 +904,6 @@ if ROS_OK:
                 user_in = input("Opción: ")
 
                 if user_in.lower() == 'q':   # salir del menú
-                    # print("Saliendo del menú.")
                     if last_conf:
                         print(f"Saliendo del menú. La última configuración seleccionada fue: {last_conf}")
                     else:
@@ -753,9 +923,7 @@ if ROS_OK:
                         print("Índice fuera de rango, intente de nuevo.")
                 except ValueError:
                     print("Entrada inválida, use un número o 'q' para salir.")
-                # for conf in confs:
-                #     print(list(conf))
-        
+
         def explore_ik_configs(self, robt, tool, wobj, ver_todo=True):
             """
             Recorre todas las configuraciones IK de robt.find_valid_configs(),
@@ -878,15 +1046,133 @@ if ROS_OK:
             q6 = list(q)[:6]
 
             # Calculá FK con el robot model (cobot_tb) -> SE3
-            T = cobot_tb.fkine(q6) * tool  # asumo que devuelve SpatialMath SE3 (unit: normalmente metros)
-            # Detectar unidades: si la traslación es muy grande asumimos que está en mm y convertimos.
-            # trans = np.array(T.t).astype(float).flatten()
-            # if np.linalg.norm(trans) > 10.0:  # si >10 asumo que son mm (heurística)
-            #     trans = trans / 1000.0
-            #     T = SE3(trans, T.r)  # construyo nuevo SE3 con rotación igual y traslación corregida
-
-            # Ahora publicamos en TFPublisher (que espera metros)
+            T = cobot_tb.fkine(q6) * tool 
             self.node_tf.add_robt(T, frame_name, reference_frame)
+
+        def traj_moveit(self, archivo: str, traj_name: str = "TRAJ", tool = SE3()):
+            """
+            Ejecuta una trayectoria guardada en un archivo .py.
+            
+            Args:
+                archivo (str): Nombre del archivo .py (ej: 'movimientos_llavero')
+                traj_name (str): Nombre de la variable dentro del archivo (ej: 'PICK_UP')
+                tool (SE3): Herramienta a usar.
+            """
+            # Recuperar la lista de puntos
+            trajectory_points =  self._load_project_variable("Trayectorias", archivo, traj_name, verbose=True)
+            first_len = len(trajectory_points[0])
+            if first_len not in (6, 7):
+                raise ValueError(f"Dimensión inesperada en el primer punto: {first_len} (se espera 6 o 7)")
+
+            out = []
+            for i, pt in enumerate(trajectory_points):
+                # Chequeamos que todos los puntos tengan la misma dimensión, ya sea 6 o 7.
+                if len(pt) != first_len:
+                    raise ValueError(f"Punto {i} tiene longitud {len(pt)} incompatible con el primer punto.")
+
+                arr6 = np.asarray(pt)
+                # convertir a lista de floats puros (send_angles suele esperar lista de python floats)
+                out.append([float(x) for x in arr6])
+            
+            if first_len == 7:
+                # Si los puntos tienen dimensión 7 entonces también se mueve el gripper.
+                self._send_move(trajectory_points, f'{traj_name}', 'Moveit')
+            else:
+                # Si los puntos son de dimensión 6, respetamos la pinza actual.
+                self._execute_arm_trajectory(np.asarray(trajectory_points), f'{traj_name}', 'Moveit')
+
+            # armamos el RobTarget para devolverlo
+            last_q = trajectory_points[-1][:6]
+            last_robt = robt_from_q(last_q, tool)
+
+            return last_robt
+        
+        def load_scene(self, scene_filename: str):
+            """
+            Busca el archivo de escena en la misma carpeta que la rutina,
+            importa 'setup_scene' y la ejecuta.
+            """
+            print(f"[Sim] Intentando cargar escena: {scene_filename}...")
+            
+            try:
+                # 1. Usamos el helper que ya creamos.
+                # subfolder="" significa "la misma carpeta donde está la rutina".
+                # Buscamos la función "setup_scene" dentro de ese archivo.
+                setup_func = self._load_project_variable(
+                    subfolder="", 
+                    filename=scene_filename, 
+                    var_name="setup_scene"
+                )
+                
+                # 2. Ejecutamos la función pasando este robot
+                setup_func(self)
+                print(f"[Sim] Escena '{scene_filename}' cargada correctamente.")
+                
+            except FileNotFoundError:
+                print(f"[Sim] Advertencia: No se encontró el archivo de escena '{scene_filename}'.")
+            except AttributeError:
+                print(f"[Sim] Advertencia: El archivo '{scene_filename}' no tiene una función 'setup_scene(robot)'.")
+            except Exception as e:
+                print(f"[Sim] Error cargando escena: {e}")
+
+        def _check_limits(self, trajectory_arm: np.ndarray):
+            """Verifica límites solo para el brazo y notifica."""
+            # Asumiendo que check_joint_limits y joint_limits existen en tu contexto global o self
+            q_limit = check_joint_limits(np.rad2deg(trajectory_arm), joint_limits)
+            if q_limit:
+                if len(q_limit) == 1:
+                    print(f"⚠️  Valor fuera de límite para el eje {q_limit[0]}")
+                else:
+                    ejes = ", ".join(map(str, q_limit))
+                    print(f"⚠️  Se sobrepasan límites en los ejes: {ejes}")
+
+        def _execute_arm_trajectory(self, trajectory_arm_6dof: np.ndarray, robt_name: str, wobj_name: str):
+            """
+            HELPER MAESTRO:
+            1. Recibe trayectoria solo del brazo (N, 6).
+            2. Verifica límites.
+            3. Le pega el valor actual del gripper a toda la trayectoria (N, 7).
+            4. Envía a ejecutar.
+            """
+            # 1. Validar límites
+            self._check_limits(trajectory_arm_6dof)
+
+            # 2. Obtener valor actual del gripper (índice 6)
+            # Si q_current no está inicializado, asumimos 0.0 (o GRIPPER_OPEN)
+            gripper_val = self.q_current[6] if self.q_current is not None else 0.0
+
+            # 3. Vectorización: Crear columna de gripper y unir
+            # (N, 6) -> (N, 7) de forma eficiente con NumPy
+            filas = trajectory_arm_6dof.shape[0]
+            columna_gripper = np.full((filas, 1), gripper_val)
+            
+            trajectory_full = np.hstack([trajectory_arm_6dof, columna_gripper])
+
+            # 4. Enviar
+            self._send_move(trajectory_full, robt_name, wobj_name)
+
+        def _normalize_q(self, q) -> np.ndarray:
+            """
+            Asegura que el vector 'q' tenga siempre 7 elementos (float).
+            Recorta si sobran, rellena con ceros si faltan.
+            """
+            q = np.array(q, dtype=float).flatten()
+            if q.size == 7:
+                return q
+            elif q.size > 7:
+                return q[:7]
+            else:
+                # Rellenar con ceros al final
+                return np.pad(q, (0, 7 - q.size), 'constant')
+
+        def grabar_poses(self, cantidad, ajuste=False, q_list = None):
+            """
+            Se debe pasar una lista en grados para lograr compatibilidad con métodos matemáticos. Si los datos obtenidos provienen de la función `grabar_poses` del cobot, ya se encuentran en grados.
+            """
+            print("Modo SIM: Usando lista de vectores articulares...")
+            if len (q_list) != cantidad:
+                raise ValueError("La cantidad de vectores articulares no coincide con la requerida por el método.")
+            return q_list, 0
 
         def shutdown(self):
             print(">>> Apagando SimManager...")
@@ -900,9 +1186,23 @@ if ROS_OK:
                 rclpy.shutdown()
                 print(">>> SimManager finalizado.")
 
-class MyCobotController(BaseRobotController):
-    def __init__(self, mode = 'raspi', rotar_base: bool = True):
+else:
+    class SimManager(BaseRobotController):
+        def __init__(self, *args, **kwargs):
+            # Si alguien intenta usar esto en la Raspi, le avisamos amablemente
+            raise RuntimeError(
+                "\nERROR CRÍTICO: Intentaste iniciar 'SimManager' pero ROS2 no está instalado.\n"
+                "En este dispositivo (Raspi) solo puedes usar el modo 'real'."
+            )
+            
+        # Métodos vacíos solo para satisfacer a BaseRobotController si fuera estricto
+        def MoveJ(self, *args, **kwargs): pass
+        def MoveC(self, *args, **kwargs): pass
+        def GripperState(self, *args, **kwargs): pass
 
+class MyCobotController(BaseRobotController):
+    def __init__(self, mode = 'raspi', rotar_base: bool = True, project_path=None):
+        super().__init__(project_path=project_path)
         # Conexión con el robot físico
         if mode == 'raspi':
             self.mc = MyCobot320('/dev/ttyAMA0', 115200)
@@ -916,8 +1216,13 @@ class MyCobotController(BaseRobotController):
         # Modelo DH de la toolbox para la cinemática y la IK
         self.cobot_tb = myCobot320(rotar_base=rotar_base)
 
+        self._server_ref = None
+
         # Activamos la pinza
         # self.mc.set_gripper_mode(0)
+
+    def set_server_observer(self, server):
+        self._server_ref = server
 
     def MoveJ(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3()):
         # Pose global = wobj * robtarget * inv(tool)
@@ -974,7 +1279,7 @@ class MyCobotController(BaseRobotController):
 
         freq_q = 20 # Hz 
         for q in q_traj_deg:
-            self.mc.send_angles(q, 100)
+            self.mc.send_angles(q.tolist(), 100)
             time.sleep(1/freq_q)
     
     def MoveJAngles(self, q, spd = 30, unit = 'rad'):
@@ -995,32 +1300,108 @@ class MyCobotController(BaseRobotController):
         elif unit == 'deg':
             self.mc.sync_send_angles(q.tolist(), spd)
 
+    def levantar_traj(self, archivo: str, traj_name: str = "TRAJ", tool = SE3()):
+        """
+        Levanta una trayectoria generada con MoveIt y la envía al cobot.
+        """
+        # try:
+        #     # Obtenemos el objeto módulo del script principal
+        #     main_module = sys.modules['__main__']
+            
+        #     # Obtenemos su ruta absoluta y su carpeta contenedora (la carpeta del Proyecto)
+        #     # Ejemplo: si main es scripts/Proyecto/rutina.py, esto da .../scripts/Proyecto
+        #     project_folder = Path(main_module.__file__).resolve().parent
+            
+        # except (AttributeError, KeyError):
+        #     # Fallback por si estás probando desde una consola interactiva
+        #     print("Advertencia: No se pudo detectar el script principal, usando directorio actual.")
+        #     project_folder = Path.cwd()
+
+        # # 2. Apuntamos a la carpeta Trayectorias dentro de ESE proyecto
+        # tray_folder = project_folder / "Trayectorias"
+
+        # # Debug (opcional, para que veas que funciona)
+        # # print(f"Buscando trayectorias en: {tray_folder}")
+
+        # # normalizar nombre
+        # if not nombre.endswith(".py"):
+        #     nombre += ".py"
+
+        # path_traj = tray_folder / nombre
+
+        # if not path_traj.exists():
+        #     raise FileNotFoundError(
+        #     f"No se encontró el archivo '{nombre}' en la carpeta del proyecto:\n"
+        #     f"{tray_folder}\n"
+        #     f"Asegurate de haber creado la carpeta 'Trayectorias' dentro de tu carpeta de Proyecto."
+        # )
+
+        # # importar módulo desde archivo
+        # spec = importlib.util.spec_from_file_location("mod_traj", path_traj)
+        # module = importlib.util.module_from_spec(spec)
+        # spec.loader.exec_module(module)  # type: ignore
+
+        # if not hasattr(module, "TRAJ"):
+        #     raise AttributeError(f"El archivo {nombre} no contiene la variable TRAJ")
+
+        # traj_moveit = module.TRAJ
+        traj_moveit =  self._load_project_variable("Trayectorias", archivo, traj_name)
+        first_len = len(traj_moveit[0])
+        if first_len not in (6, 7):
+            raise ValueError(f"Dimensión inesperada en el primer punto: {first_len} (se espera 6 o 7)")
+
+        trim_last = (first_len == 7)
+
+        out = []
+
+        for i, pt in enumerate(traj_moveit):
+            if len(pt) < (7 if trim_last else 6):
+                raise ValueError(f"Punto {i} tiene longitud {len(pt)} incompatible con el primer punto.")
+
+            # tomamos solo las 6 primeras entradas (si trim_last True/False, ambas hacen [:6])
+            arr6 = np.asarray(pt)[:6]
+            deg = np.rad2deg(arr6)              # ndarray con floats
+            # convertir a lista de floats puros (send_angles suele esperar lista de python floats)
+            out.append([float(x) for x in deg])
+
+        freq_q = 20 # Hz 
+        for q in out:
+            self.mc.send_angles(q, 100)
+            time.sleep(1/freq_q)
+
+        # armamos el RobTarget para devolverlo
+        last_q = traj_moveit[-1][:6]
+        last_robt = robt_from_q(last_q, tool)
+
+        return last_robt
+
     def GripperState(self, apertura: float, spd: int = 30):
         """
         Modifica el estado de la pinza.
         
         Args:
-            mov: 0 - Abrir, 1 - Cerrar, 10 - Soltar
+            apertura: grado de apertura de la pinza. < 50 cierre total, > 50 apertura total.
             spd: velocidad.
         """
         if apertura < 50:
             mov = 1  # cerrar
         else:
             mov = 0  # abrir
-        # if mov not in (0, 1, 10):
-        #     raise ValueError("El parámetro 'mov' debe ser 0 (abrir), 1 (cerrar) o 10 (soltar).")
         
         self.mc.set_gripper_mode(0)
         self.mc.set_gripper_state(mov, spd)
 
-    def recolectar_puntos_TCP(self, poses=None, indices_a_grabar=None, ajuste = False):
+        if self._server_ref is not None:
+            self._server_ref.set_gripper_state(apertura)
+
+    # def teach_and_save_TCP(self, filename: str, tcp_name: str, save_q: bool = False) -> SE3:
     
         """
         Permite recolectar o corregir poses manuales para calibrar el TCP.
         Si 'poses' se pasa, usa esa lista y solo graba los índices indicados en 'indices_a_grabar'.
         Si no, graba las 4 poses como siempre.
         """
-        # Antes de grabar las posiciones colocamos la pieza auxiliar y cerramos la pinza.
+        """Antes de grabar las posiciones colocamos la pieza auxiliar y cerramos la pinza.
         self.GripperState(0)
         time.sleep(5)
         self.GripperState(1)
@@ -1096,9 +1477,9 @@ class MyCobotController(BaseRobotController):
             print(f"Pose {i+1}: {p}")
 
         print("\nRecolecta finalizada. Ya podés calcular el TCP con TCP_4puntos(poses).")
-        return poses
-    
-    def grabar_poses(self, cant_poses : int,  poses=None, indices_a_grabar=None, ajuste = False):
+        return poses"""
+        
+    def grabar_poses(self, cant_poses : int, ajuste = False, q_wobj=None):
     
         """
         Permite recolectar o corregir poses manuales para grabar un wobj o TCP.
@@ -1110,12 +1491,10 @@ class MyCobotController(BaseRobotController):
         time.sleep(5)
         self.GripperState(0)
 
-        if poses is None:
-            poses = [None] * cant_poses
-            datos_robot = [None] * cant_poses
+        poses = [None] * cant_poses
+        datos_robot = [None] * cant_poses
 
-        if indices_a_grabar is None:
-            indices_a_grabar = list(range(cant_poses))
+        indices_a_grabar = list(range(cant_poses))
 
         for n in indices_a_grabar:
             print(f"\nPreparando para liberar los motores. Posición {n+1} de {cant_poses}.")
@@ -1192,7 +1571,7 @@ class MyCobotController(BaseRobotController):
             print(f"Q-coords {i+1}: {d}")
 
         return poses, datos_robot
-    
+     
 def TCP_4puntos(q_pose, z_aux = 25):
     # Convert poses to transformation matrices
     T_list = []
@@ -1282,18 +1661,18 @@ def TCP_4puntos_extendido(q_pose, z_aux = 25):
         ecm = 0.0
     rmse = np.sqrt(ecm)
 
+    x = x.flatten()
     p_tool = x[:3]
     # Corrección por pieza auxiliar
     correccion = np.array([0, -abs(z_aux), 0])
     p_tool_real = p_tool[:3] + correccion
 
+    return p_tool, p_tool_real, residuals, ecm, rmse
     # print(f"Offset TCP (despeje Pablo): {p_tool[:3]}")
     # print(f"Offset TCP real (con corrección): {tcp_offset_real}")
     # # print(f"Traslación base al punto ensayado (con signo invertido): {x[3:]}")
     # print(f"ECM: {ecm:.4f}")
     # print(f"RMSE: {rmse:.4f}")
-
-    return p_tool, p_tool_real, residuals, ecm, rmse
 
 def fit_line_pca(points):
     """Ajuste de recta por PCA (TLS). Devuelve centroid, direction(normalizado), residuals."""
@@ -1473,57 +1852,87 @@ def check_joint_limits(q_traj, joint_limits):
             flag_lim.append(j+1)  # eje en base 1
     return flag_lim
 
-def save_terna_se3(filename: str, name: str, se3_obj: SE3):
+def robt_from_q(q, tool):
     """
-    Guarda una terna SE3 como variable Python directamente en formato SE3,
-    asegurando alta precisión en los números.
-
-    Args:
-        filename (str): Ruta del archivo donde se guardará la terna. Ej: `Ternas.py`.
-        name (str): Nombre de la variable que se guardará.
-        se3_obj (SE3): Objeto SE3 que representa la transformación a guardar.
+    Construye un robtarget a partir de un vector de variables articulares y una herramienta.
     """
-    # Formatear cada elemento de la matriz y el vector con alta precisión
-    R_str = "[\n" + ",\n".join(["        [" + ", ".join([f"{val:.18e}" for val in row]) + "]" for row in se3_obj.R]) + "\n    ]"
-    t_str = "[" + ", ".join([f"{val:.18e}" for val in se3_obj.t.flatten()]) + "]"
+    pose_SE3 = cobot_tb.fkine(q) * tool
+    config = cobot_tb.calc_conf(np.array(q))
+    robt = RobTarget(pose_SE3, config)
+    return robt
 
-    with open(filename, "a") as f:
-        # Asegurar que la importación solo se escriba una vez si el archivo es nuevo
-        f.seek(0, 2) # Ir al final del archivo
-        if f.tell() == 0: # Si el archivo está vacío
-            f.write("from spatialmath import SE3\n")
-            f.write("import numpy as np\n\n")
+def _normalize_q(q) -> np.ndarray:
+    """
+    Asegura que el vector 'q' tenga siempre 7 elementos (float).
+    Recorta si sobran, rellena con ceros si faltan.
+    """
+    q = np.array(q, dtype=float).flatten()
+    if q.size == 7:
+        return q
+    elif q.size > 7:
+        return q[:7]
+    else:
+        # Rellenar con ceros al final
+        return np.pad(q, (0, 7 - q.size), 'constant')
+    
+"""def _save_se3_definition(self, folder: str, filename: str, var_name: str, se3_obj: SE3, q_vals: list = None):
+        
+        Helper genérico para guardar definiciones SE3 (Wobj o TCP) y sus Q asociados en archivos .py.
+             
+        # Limpieza del nombre de archivo (asegurar extensión .py)
+        if not filename.endswith(".py"):
+            filename += ".py"
 
-        f.write(f"# Guardado {datetime.datetime.now().isoformat()}\n")
-        # Escribir la matriz de rotación y el vector de traslación como arrays de numpy
-        # para facilitar la lectura y mantener el formato.
-        f.write(f"{name}_R = np.array({R_str})\n")
-        f.write(f"{name}_t = np.array({t_str})\n")
-        f.write(f"{name} = SE3.Rt({name}_R, {name}_t)\n\n")
-
-if ROS_OK:
-    def live_pose(sleep = 0.3, max_stable=10, tol=0.1):
-        cobot = MyCobotController()
-        rviz = SimManager()
-        stable_count = 0
-        prev_q = None
+        # --- 1. GUARDADO DEL SE3 ---
+        path_se3 = self._resolve_project_path(folder, filename, create_dir=True)
+        
+        mode_se3 = 'a' if path_se3.exists() else 'w'
+        
         try:
-            while True:
-                q = cobot.mc.get_angles()
-                time.sleep(0.3)
-                rviz.VerQ(np.radians(q))
+            with open(path_se3, mode_se3) as f:
+                # Escribir cabecera solo si es archivo nuevo
+                if mode_se3 == 'w':
+                    f.write(f"# Archivo de definiciones: {folder}\n")
+                    f.write("from spatialmath import SE3\n")
+                    f.write("import numpy as np\n\n")
+                
+                # Formateo de alta precisión (Tu lógica intacta)
+                R_str = "[\n" + ",\n".join(["    [" + ", ".join([f"{val:.18e}" for val in row]) + "]" for row in se3_obj.R]) + "\n  ]"
+                t_str = "[" + ", ".join([f"{val:.18e}" for val in se3_obj.t.flatten()]) + "]"
+                
+                f.write(f"# Guardado: {datetime.datetime.now().isoformat()}\n")
+                f.write(f"{var_name}_R = np.array({R_str})\n")
+                f.write(f"{var_name}_t = np.array({t_str})\n")
+                f.write(f"{var_name} = SE3.Rt({var_name}_R, {var_name}_t)\n\n")
+            
+            print(f"[Guardado] {folder}/{var_name} -> {path_se3.name}")
 
-                if prev_q is not None:
-                    dif = np.max(np.abs(np.array(q) - np.array(prev_q)))
-                    if dif < tol:  # prácticamente no cambió
-                        stable_count += 1
-                    else:
-                        stable_count = 0
-                prev_q = q
+        except Exception as e:
+            print(f"[Error] Falló guardado SE3 en {filename}: {e}")
 
-                if stable_count >= max_stable or not cobot.mc.is_moving():
-                    print("Robot detenido, cerrando live pose")
-                    break
-                time.sleep(sleep)
-        except KeyboardInterrupt:
-            print("Live pose detenido por el usuario")
+        # --- 2. GUARDADO DE Q (Opcional) ---
+        if q_vals:
+            name_q = filename.replace(".py", "") + "_q.py"
+            path_q = self._resolve_project_path(folder, name_q)
+            
+            variable_name_q = f"{var_name}_q"
+            mode_q = 'a' if path_q.exists() else 'w'
+            
+            try:
+                with open(path_q, mode_q) as f:
+                    if mode_q == 'w':
+                        f.write(f"# Config Articulares (Q) para {folder}\n\n")
+
+                    f.write(f"# Q Values para: {var_name}\n")
+                    f.write(f"{variable_name_q} = [\n")
+                    for row in q_vals:
+                        # Limpieza a lista de floats estándar
+                        clean_row = [float(x) for x in row]
+                        f.write(f"    {clean_row},\n")
+                    f.write("]\n\n")
+                
+                print(f"[Guardado] Q Values -> {path_q.name} (Var: {variable_name_q})")
+                
+            except Exception as e:
+                print(f"[Error] Falló guardado Q en {name_q}: {e}")"""
+
