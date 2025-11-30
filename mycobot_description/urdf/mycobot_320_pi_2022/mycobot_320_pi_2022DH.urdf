@@ -3,7 +3,43 @@
 	
 <xacro:property name="width" value=".2" />
 
+  <link name="base_mesa">
+    <visual>
+      <geometry>
+        <mesh filename="package://mycobot_description/urdf/mycobot_320_pi_2022/base_mesa.STL" scale="0.001 0.001 0.001"/>
+      </geometry>
+	<origin xyz="0.0653 0.005 -0.015" rpy="-1.5708 0 3.17929"/>
+	<material name="alum">
+      <color rgba="1.0 1.0 1.0 1.0"/>
+    </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://mycobot_description/urdf/mycobot_320_pi_2022/base_mesa.STL" scale="0.001 0.001 0.001"/>
+      </geometry>
+	  <origin xyz="0.0653 0.005 -0.015" rpy="-1.5708 0 3.17929"/>
+    </collision>
+  </link>
 
+  <link name="base_flange">
+    <visual>
+      <geometry>
+        <mesh filename="package://mycobot_description/urdf/mycobot_320_pi_2022/base_flange.STL" scale="0.001 0.001 0.001"/>
+      </geometry>
+	<origin xyz="0.0 0.0 0.0" rpy="1.5708 0 1.5708"/>
+	<material name="mycobot_grey">
+      <color rgba="0.576 0.576 0.576 1.0"/>
+    </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://mycobot_description/urdf/mycobot_320_pi_2022/base_flange.STL" scale="0.001 0.001 0.001"/>
+      </geometry>
+	  <origin xyz="0.0 0.0 0.0" rpy="1.5708 0 1.5708"/>
+    </collision>
+  </link>
+
+  
   <link name="base">
     <visual>
       <geometry>
@@ -201,9 +237,6 @@
                 <mesh filename="package://mycobot_description/urdf/mycobot_320_pi_2022/gripper_right1.dae" scale="0.001 0.001 0.001"/>
             </geometry>
             <origin xyz = "-0.072 -0.05 0.0 " rpy = " 0 0 1.5708"/>
-            <material name="half_transparent">
-                <color rgba="0.5 0.5 0.8 0.8"/>
-            </material>
         </visual>
         <collision>
             <geometry>
@@ -244,6 +277,18 @@
         </collision>
     </link>
 
+  <joint name="flange_to_mesa" type="fixed">
+    <parent link="base_flange"/>
+    <child link="base_mesa"/>
+    <origin xyz="0 0 0.0" rpy="0 0 0"/>
+  </joint>
+   
+  <joint name="base_to_flange" type="fixed">
+    <parent link="base"/>
+    <child link="base_flange"/>
+    <origin xyz="0 0 0.0" rpy="0 0 0"/>
+  </joint>
+  
   <joint name="joint2_to_joint1" type="revolute">
     <axis xyz="0 0 1"/>
     <limit effort = "1000.0" lower = "-2.93" upper = "2.93" velocity = "0"/>
