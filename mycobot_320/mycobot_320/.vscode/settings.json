@@ -1,0 +1,8 @@
+// {
+//     "python.analysis.extraPaths": [
+//         "./CobotStudio_core"
+//     ],
+//     "python.autoComplete.extraPaths": [
+//         "./CobotStudio_core"
+//     ]
+// }
