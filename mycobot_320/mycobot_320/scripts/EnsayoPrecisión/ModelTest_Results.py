@@ -42,7 +42,7 @@ def preparar_df_reporte_errores(df_completo):
         return T_se3
     
     # Nos aseguramos de que las columnas de pose sean np.array para los cálculos
-    for col in ['q_esp', 'pose_esp', 'pose_alc', 'err_pose', 'err_q']:
+    for col in ['q_esp', 'pose_esp', 'pose_alc', 'err_pose', 'err_q', 'tb_check']:
         if col in df_reporte.columns:
             df_reporte[col] = df_reporte[col].apply(string_to_array)
     # Función interna para calcular la diferencia de rotación (DeltaRot)
@@ -62,14 +62,16 @@ def preparar_df_reporte_errores(df_completo):
             # Despejar DeltaRot: DeltaRot = R_alc * R_esp^-1
             DeltaRot_matrix = R_alc * R_esp.inv()
             q = UnitQuaternion(DeltaRot_matrix)
-            return q.angvec('deg')[0]
+            delta_rot = q.angvec('deg')[0]
+            return np.round(delta_rot, 2)
         except Exception:
             return np.nan
 
     # Función interna para calcular el error de traslación
     def calcular_err_tras(pose_array):
         if isinstance(pose_array, np.ndarray) and len(pose_array) >= 3:
-            return np.linalg.norm(pose_array[:3])
+            delta_tras = np.linalg.norm(pose_array[:3])
+            return np.round(delta_tras, 2)
         return np.nan
     
     def calcular_error_jacobiano(row, model):
@@ -86,7 +88,7 @@ def preparar_df_reporte_errores(df_completo):
             
             # Calcular el error cartesiano: delta_x = J * delta_q
             delta_x = J @ err_q_rad  # Usamos @ para multiplicación de matrices
-            
+            delta_x[3:] = np.rad2deg(delta_x[3:])
             # print(f'delta_x =\n{delta_x}')
             # delta_x es [dx, dy, dz, drx, dry, drz]
             # Calculamos la magnitud del error de traslación (primeros 3 elementos)
@@ -95,7 +97,7 @@ def preparar_df_reporte_errores(df_completo):
             # Y la magnitud del error de rotación (últimos 3 elementos)
             error_rotacional = np.linalg.norm(delta_x[3:])
             
-            return (np.round(delta_x, 4))
+            return (np.round(delta_x, 2))
             
         except Exception as e:
             print(f"Error en Jacobiano: {e}") # Para depurar
@@ -112,19 +114,39 @@ def preparar_df_reporte_errores(df_completo):
     # ###> 4. Definimos el orden final de las columnas, incluyendo DeltaRot
     cols = ['punto_n', 'version', 'err_q', 'err_pose', 'err_tras', 'DeltaRot', 'Delta_err_cart', 'tb_check']
 
-    df_base = df_reporte[cols]
+    df_base = df_reporte[cols].copy()
 
     nombres_nuevos = {
         'err_q': 'Error q [°]',
         'err_pose': 'Error Pose [mm, °]',
         'err_tras': 'Error Trasl. [mm]',
         'DeltaRot': 'Δ Rotación [°]',
-        'Delta_err_cart': 'Δ Cartesiano (J) [mm, rad]',
+        'Delta_err_cart': 'Δ Cartesiano (J) [mm, °]',
         'tb_check': 'Check TB [mm]'
     }
     
     # Aplica el renombrado
     df_final_renombrado = df_base.rename(columns=nombres_nuevos)
+
+    def formatear_array_bonito(val):
+        """Convierte np.array o lista en string '[1.23, 4.56]'"""
+        if isinstance(val, (np.ndarray, list)):
+            # Si hay NaNs dentro, manejarlos para que no rompan el format
+            cleaned_val = [x if not np.isnan(x) else 0.0 for x in val] 
+            return "[" + ", ".join([f"{x:.2f}" for x in cleaned_val]) + "]"
+        return val
+
+    # Lista de columnas que contienen arrays y quieres formatear
+    columnas_con_listas = [
+        'Error Pose [mm, °]', 
+        'Check TB [mm]', 
+        'Δ Cartesiano (J) [mm, °]', # Agregué esta también porque suele ser un array
+        'Error q [°]'               # Y esta si quieres que se vea igual
+    ]
+
+    for col in columnas_con_listas:
+        if col in df_final_renombrado.columns:
+            df_final_renombrado[col] = df_final_renombrado[col].apply(formatear_array_bonito)
     
     # Devolvemos el df final, asegurándonos de que solo contenga las columnas deseadas
     return df_final_renombrado
@@ -163,8 +185,8 @@ def accion_exportar_reportes(df_pre, df_post, ruta_resultados):
 
 def accion_analisis_consola(df_pre, df_post):
     print("\n--- Realizando Análisis de Error de Traslación ---")
-    promedio_err_tras_pre = df_pre['err_tras'].dropna().mean()
-    promedio_err_tras_post = df_post['err_tras'].dropna().mean()
+    promedio_err_tras_pre = df_pre['Error Trasl. [mm]'].dropna().mean()
+    promedio_err_tras_post = df_post['Error Trasl. [mm]'].dropna().mean()
     mejora = promedio_err_tras_pre - promedio_err_tras_post
     mejora_porcentual = (mejora / promedio_err_tras_pre) * 100 if promedio_err_tras_pre != 0 else float('inf')
     
