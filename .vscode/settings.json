@@ -1,0 +1,10 @@
+{
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/mycobot_320/mycobot_320/CobotStudio_core"
+    ],
+    "python.autoComplete.extraPaths": [
+        "${workspaceFolder}/mycobot_320/mycobot_320/CobotStudio_core"
+    ],
+
+    "terminal.integrated.cwd": "${workspaceFolder}/mycobot_320/mycobot_320"
+}
