@@ -7,7 +7,7 @@ Centraliza tipos, constantes y manejo de compatibilidad ROS/pymycobot.
 from __future__ import annotations
 import numpy as np
 import time
-from spatialmath import SE3
+from spatialmath import SE3, UnitQuaternion
 from common_robt import RobTarget
 from typing import TYPE_CHECKING
 from CobotStudio import BaseRobotController
@@ -49,7 +49,8 @@ class Shapes:
 __all__ = [
     'np', 
     'time', 
-    'SE3', 
+    'SE3',
+    'UnitQuaternion',
     'RobTarget', 
     'ROSManager',     # La clase real o dummy según el entorno
     'BaseRobotController',
