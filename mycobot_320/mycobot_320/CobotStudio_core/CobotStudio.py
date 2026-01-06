@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 # Typehinting: no se ejecuta en runtime, solo ofrece autocompletado.
 if TYPE_CHECKING:
-    from MoveItAdapter import MoveItAdapter
+    from MoveItManager import MoveItManager
 
 # Imports de ROS2
 try:
@@ -105,21 +105,9 @@ class BaseRobotController(ABC):
             IKineError: Si no se encuentra solución a la cinemática inversa.
         """
         pass
-    
-    @abstractmethod
-    def MoveJAngles(self, q, speed:int = 30, unit = 'rad'):
-        """
-        Envía al robot al vector de variables articulares determinado.
-
-        Args:
-            q (Array(1,6)): Vector de variables articulares.
-            speed (int (0-100)): Velocidad de movimiento.
-            unit (str ('deg', 'rad')) : Unidad de las variables articulares.
-        """
-        pass
 
     @abstractmethod
-    def MoveC(self, robt, speed:int = 30, tool=SE3(), wobj=SE3(), wobj_name='MoveC_wobj', robt_name='MoveC_robt'):
+    def MoveL(self, robt, speed:int = 30, tool=SE3(), wobj=SE3(), wobj_name='MoveL_wobj', robt_name='MoveL_robt'):
         """
         Realiza un movimiento cartesiano (lineal) hacia un objetivo (robtarget).
         
@@ -142,11 +130,23 @@ class BaseRobotController(ABC):
     @abstractmethod
     def GripperState(self, apertura: float, spd: int):
         """
-        Controla el estado de la pinza del robot.
+        Modifica el estado de la pinza del robot permitiendo aperturas parciales.
 
         Args:
-            apertura (float): Valor de apertura de la pinza (0 cerrado, 100 abierto).
-            spd (int): Velocidad de movimiento de la pinza (0-100).
+            apertura (float 0-100): Valor de apertura de la pinza (0 cerrado, 100 abierto).
+            spd (int 0-100): Velocidad de movimiento de la pinza.
+        """
+        pass
+
+    @abstractmethod
+    def MoveJ_q(self, q, speed:int = 30, unit = 'rad'):
+        """
+        Envía al robot al vector de variables articulares determinado.
+
+        Args:
+            q (Array(1,6)): Vector de variables articulares.
+            speed (int 0-100): Velocidad de movimiento.
+            unit (str ('deg', 'rad')) : Unidad de las variables articulares.
         """
         pass
 
@@ -155,33 +155,189 @@ class BaseRobotController(ABC):
         Envía al robot a su posición home: q = [0, 0, 0, 0, 0, 0].
 
         Args:
-            spd (int) :  Velocidad de movimiento (0-100).
+            spd (int 0-100): Velocidad de movimiento.
         """
         q = np.zeros(6)
-        self.MoveJAngles(q, speed)
-
-    def _resolve_project_path(self, subfolder: str, filename: str, create_dir: bool = False) -> Path:
+        self.MoveJ_q(q, speed)
+    
+    @abstractmethod
+    def teach_poses(self, cantidad: int, ajuste: bool = False, q_list: list = None):
         """
-        Helper para construir rutas absolutas dentro de `self.project_root` y asegurar la extensión ".py".
+        Grabación de poses del robot.
 
-        Nota:
-            - Fuerza la extensión '.py' si no está presente.
-            - Si create_dir=True, genera los directorios faltantes (efecto secundario).
+        El comportamiento varía según la implementación:
+        
+        - **ROSManager**: Se reconocen las poses dadas por la lista `q_list` que contiene los vectores de variables articulares.
+        - **MyCobotController**: Se inicia la rutina de grabación de poses manual en el robot.
+
+        Args:
+            cantidad (int): Cantidad de poses a grabar.
+            ajuste (bool): Si es True, permite ajuste interactivo de cada pose antes de grabarla a través de un joystick.
+            q_list (list, optional): Lista de vectores articulares para simular la grabación (solo en ROSManager).
+        """
+        pass
+    
+    def joystick_adjust(self, q: list, mover_callback, step_fino: float = 5.0, step_grueso: float = 10.0):
+        """
+        Ajuste interactivo de una pose emulando el comportamiento de un joystick con el teclado.
+        Al presionar las teclas se genera un nuevo robtarget desplazado de la posición actual respecto al workobject (offset).
+        Luego se calcula la cinemática inversa para enviar el movimiento al robot. Si falla el cálculo del PCI
+        se recupera el último robtarget válido.
+
+        Args:
+            q (list or np.ndarray): Vector de variables articulares inicial.
+            mover_callback (function): Función que mueve el robot (ej: ROSManager.MoveJ).
+            step_fino (float): Paso fino para desplazamientos en mm.
+            step_grueso (float): Paso grueso para desplazamientos en mm.
 
         Returns:
-            Path: Ruta pathlib completa lista para usarse.
+            robt (RobTarget): RobTarget final luego de los ajustes.
+
+        Control:
+            - Flechas: ejes X e Y.
+            - PgUp/PgDn: eje Z.
+            - Shift + flecha/PgUp/PgDn = movimiento de paso grueso.
+            - Esc = salir.
         """
-        target_folder = self.project_root / subfolder
+        # Calcular la pose inicial y generar el robtarget
+        print(f'Pose recibida = {q}')
+        pose = self.cobot_tb.fkine(q)
+        robt = RobTarget(pose, self.cobot_tb.calc_conf(q))
+        print(f"RobTarget inicial: \n{robt.pose} | Configuración: {robt.config}")
+        paso = step_fino
 
-        # Creación del directorio (si es necesario)
-        if create_dir:
-            target_folder.mkdir(parents=True, exist_ok=True)
+        print("\n--- Modo joystick ---")
+        print("Flechas = mover XY | PgUp/PgDn = mover Z | Shift = paso grueso | Esc = salir")
 
-        # Agregado de extensión si no fue especificada
-        if not filename.endswith(".py"):
-            filename += ".py"
-        return target_folder / filename
+        def on_press(key):
+            nonlocal robt, paso
+            # Guardar el estado actual antes de desplazarlo
+            robt_backup = robt
+            # Desplazamiento según la tecla presionada usando robtarget.offset()
+            try:
+                if key == keyboard.Key.shift:
+                    paso = step_grueso
+                elif key == keyboard.Key.up:
+                    robt = robt.offset(dy=paso)
+                elif key == keyboard.Key.down:
+                    robt = robt.offset(dy=-paso)
+                elif key == keyboard.Key.left:
+                    robt = robt.offset(dx=-paso)
+                elif key == keyboard.Key.right:
+                    robt = robt.offset(dx=paso)
+                elif key == keyboard.Key.page_up:
+                    robt = robt.offset(dz=paso)
+                elif key == keyboard.Key.page_down:
+                    robt = robt.offset(dz=-paso)
+                elif key == keyboard.Key.esc:
+                    return False
+                print(f"RobTarget ajustado: \n{robt.pose} | Configuración: {robt.config}")
+
+                # Ejecutar el movimiento: se puede elegir MoveJ o MoveL según el caso
+                mover_callback(robt)
+                
+            except IKineError as e:
+                # Si falla el PCI se recupera el último robtarget con solución válida para continuar desplazando desde el mismo
+                print(f'Error con el movimiento del robot: {e}. Restaurando a la última pose válida...')
+                robt = robt_backup
+            except Exception as e:
+                print(f'Error inesperado: {e}. Restaurando a la última pose válida...')
+                robt = robt_backup
+
+        def on_release(key):
+            # Shift debe mantenerse presionado para movimientos de paso grueso
+            nonlocal paso
+            if key == keyboard.Key.shift:
+                paso = step_fino
+
+        with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+            listener.join()
+
+        return robt
     
+    def teach_and_save_wobj(self, filename: str, wobj_name: str, tool: SE3 = SE3(), save_q: bool = False, method: str = '3points', q_test: list = None) -> SE3:
+        """
+        Enseña un workobject referido a la base del robot y lo guarda en "Workobjects/filename.py", creando el directorio si no existe.
+        Opcionalmente guarda los q leídos por el cobot en 'Workobjects/filename_q.py'.
+
+        Args:
+            filename (str) : Nombre del archivo .py (sin .py opcional).
+            wobj_name (str) : Nombre de la variable dentro del archivo.
+            tool (SE3) : Herramienta usada para enseñar el wobj.
+            save_q (bool) : Si `True`, guarda los q usados en la enseñanza en un archivo separado.
+            method (str) : Método de enseñanza: '3points' o '6points'.
+            q_test (list, optional) : Vectores de variables articulares considerados como puntos de enseñanza. Se utiliza en el robot virtual.
+        Returns:
+            wobj_calculated (SE3) : Terna que representa al workobject respecto a la base del robot.          
+        """
+        # Determinar cuántos puntos pedir
+        n_puntos = 6 if method == '6points' else 3
+        print("\n" + "="*60)
+        print(f"Enseñanza de workobject: {wobj_name}. Método: {n_puntos} puntos.")
+        print("="*60 + "\n")
+        
+        # Grabar poses (o leerlas en el caso del robot virtual)
+        q_vals, _ = self.teach_poses(n_puntos, ajuste=True, q_list=q_test)
+        
+        # Calcular el workobject
+        print(f"\n[Calculando] Procesando geometría ({method})...")
+        wobj_calculated = self.cobot_tb.teach_wobj(q_vals, tool, method=method)
+        print(f"[Resultado] Wobj:\n{wobj_calculated}")
+        
+        # Delegar guardado
+        qs_to_save = q_vals if save_q else None
+        self._save_se3_definition(
+            folder="Workobjects",
+            filename=filename,
+            var_name=wobj_name,
+            se3_obj=wobj_calculated,
+            q_vals=qs_to_save
+            )
+
+        return wobj_calculated
+
+    def teach_and_save_TCP(self, filename: str, tcp_name: str, save_q: bool = False, q_test: list = None) -> SE3:
+        """
+        Enseña un TCP con el método de los 4 puntos y lo guarda en carpeta "TCPs" dentro del proyecto.
+
+        Args:
+            filename (str) : Nombre del archivo .py (sin .py opcional).
+            tcp_name (str) : Nombre de la variable.
+            save_q (bool) : Si `True`, guarda los q usados en la enseñanza en un archivo separado.
+            q_test (list, optional) : Vectores de variables articulares considerados como puntos de enseñanza. Se utiliza en el robot virtual.
+
+        Returns:
+            tcp_calculated (SE3) : Objeto SE3 que representa la traslación al TCP enseñado.
+        """
+        print("\n" + "="*60)
+        print(f"  ENSEÑANZA DE TCP: {tcp_name}")
+        print("="*60 + "\n")
+
+        # Obtener datos físicos: 4 veces el mismo punto con orientaciones distintas
+        q_vals, _ = self.teach_poses(4, ajuste=True, q_list = q_test)
+
+        print(f"\n[Calculando] Procesando geometría TCP...")
+        tcp_result_tuple = self.cobot_tb.TCP_4puntos(q_vals)
+        
+        _, p_tool_real, _, _, rmse = tcp_result_tuple
+
+        print(f"[Resultado] TCP (Traslación): {p_tool_real}")
+        print(f"[Calidad]   RMSE: {rmse:.5f}")
+
+        # Guardar el TCP con helper específico
+        qs_to_save = q_vals if save_q else None
+
+        self._save_tcp_definition(
+            folder="TCPs",
+            filename=filename,
+            var_name=tcp_name,
+            tcp_data=tcp_result_tuple,
+            q_vals=qs_to_save
+        )
+
+        # Se devuelve la traslación, permitiendo guardarlo en una variable
+        return SE3.Trans(p_tool_real)
+
     def load_data(self, subfolder: str, filename: str, var_name: str, verbose: bool = False) -> any:
         """
         Importa dinámicamente una variable específica desde un archivo Python externo.
@@ -205,6 +361,7 @@ class BaseRobotController(ABC):
         """
         # Obtención del path al archivo con la variable
         path = self._resolve_project_path(subfolder, filename, create_dir=False)
+        print(f'Buscando en {path}')
         
         if not path.exists():
              raise FileNotFoundError(f"Archivo no encontrado: {path}")
@@ -251,7 +408,7 @@ class BaseRobotController(ABC):
             archivo (str) : Nombre del archivo .py (sin .py opcional).
             wobj_name (str) : Nombre de la variable dentro del archivo.
             tool (SE3) : Herramienta usada para enseñar (solo si falla la carga).
-            auto_teach (bool) : Si True, habilita la pregunta interactiva ante error.
+            auto_teach (bool) : Si True, ofrece la opción de proceder con la enseñanza de la terna.
             q_teach (list, optional) : Vectores de variables articulares considerados como punto de enseñanza. Se utiliza en el robot virtual.
 
         Returns:
@@ -283,7 +440,7 @@ class BaseRobotController(ABC):
                 raise e 
 
             # Interacción con el usuario
-            print(f"¿Deseas ejecutar la rutina de enseñanza para '{wobj_name}' ahora?")
+            print(f"¿Desea ejecutar la rutina de enseñanza para '{wobj_name}' ahora?")
             resp = input("Escribe 's' para enseñar, o cualquier tecla para cancelar: ").lower().strip()
             
             if resp == 's':
@@ -315,6 +472,76 @@ class BaseRobotController(ABC):
         """
         pass
     
+    @abstractmethod
+    def traj_moveit(self, archivo: str, traj_name: str = "TRAJ", tool = SE3()):
+        """
+        Lee una trayectoria generada con MoveIt y la envía al cobot la publica en RViz según corresponda.
+
+        Args:
+            archivo (str): Nombre del archivo .py.
+            traj_name (str): Nombre de la variable dentro del archivo.
+            tool (SE3): Herramienta.
+
+        Returns:
+            last_robt (RobTarget): RobTarget correspondiente al último punto de la trayectoria ejecutada.
+        """
+        pass
+    
+    @staticmethod
+    def pose_to_matrix(pose):
+        """
+        Convierte pose dada como lista [x, y, z, r, p, y] en una matriz homogénea SE3.
+
+        Args:
+            pose (list): Lista con 6 elementos [x, y, z, r, p, y] en grados.
+        Returns:
+            T_se3 (SE3): Matriz homogénea SE3.
+        """
+        x, y, z, rx, ry, rz = pose
+        rx, ry, rz = np.deg2rad([rx, ry, rz])
+        T_se3 = SE3(x, y, z) * SE3.RPY([rx, ry, rz], order='zyx')
+        return T_se3
+
+    @staticmethod
+    def matrix_to_pose(T_matrix):
+        """
+        Convierte una matriz homogénea SE3 en lista [x, y, z, r, p, y] en grados.
+        
+        Args:
+            T_matrix (np.ndarray o SE3): Matriz homogénea SE3.
+        Returns:
+            pose (list): Lista con 6 elementos [x, y, z, r, p, y] en grados.
+        """
+        T = SE3(T_matrix)
+        x, y, z = T.t
+        # Extraer rotación como RPY (en radianes), orden ZYX
+        rx, ry, rz = T.rpy(order='zyx', unit='rad')
+        # Conversión a grados
+        rx, ry, rz = np.rad2deg([rx, ry, rz])
+        return [x, y, z, rx, ry, rz]
+
+    def _resolve_project_path(self, subfolder: str, filename: str, create_dir: bool = False) -> Path:
+        """
+        Helper para construir rutas absolutas dentro de `self.project_root` y asegurar la extensión ".py".
+
+        Nota:
+            - Fuerza la extensión '.py' si no está presente.
+            - Si create_dir=True, genera los directorios faltantes (efecto secundario).
+
+        Returns:
+            Path: Ruta pathlib completa lista para usarse.
+        """
+        target_folder = self.project_root / subfolder
+
+        # Creación del directorio (si es necesario)
+        if create_dir:
+            target_folder.mkdir(parents=True, exist_ok=True)
+
+        # Agregado de extensión si no fue especificada
+        if not filename.endswith(".py"):
+            filename += ".py"
+        return target_folder / filename
+     
     def _save_aux_q_data(self, folder: str, base_filename: str, var_name: str, q_vals: list):
         """
         Helper interno para guardar una lista con los valores articulares (q) utilizados en la enseñanza de una terna (ej: TCP, workobject) en un archivo .py separado.
@@ -436,184 +663,6 @@ class BaseRobotController(ABC):
             if q_vals:
                 self._save_aux_q_data(folder, filename, var_name, q_vals)
 
-    def teach_and_save_wobj(self, filename: str, wobj_name: str, tool: SE3 = SE3(), save_q: bool = False, method: str = '3points', q_test: list = None) -> SE3:
-        """
-        Enseña un workobject referido a la base del robot y lo guarda en "Workobjects/filename.py", creando el directorio si no existe.
-        Opcionalmente guarda los q leídos por el cobot en 'Workobjects/filename_q.py'.
-
-        Args:
-            filename (str) : Nombre del archivo .py (sin .py opcional).
-            wobj_name (str) : Nombre de la variable dentro del archivo.
-            tool (SE3) : Herramienta usada para enseñar el wobj.
-            save_q (bool) : Si `True`, guarda los q usados en la enseñanza en un archivo separado.
-            method (str) : Método de enseñanza: '3points' o '6points'.
-            q_test (list, optional) : Vectores de variables articulares considerados como punto de enseñanza. Se utiliza en el robot virtual.
-        Returns:
-            wobj_calculated (SE3) : Terna que representa al workobject respecto a la base del robot.          
-        """
-        # Determinar cuántos puntos pedir
-        n_puntos = 6 if method == '6points' else 3
-        print("\n" + "="*60)
-        print(f"Enseñanza de workobject: {wobj_name}. Método: {n_puntos} puntos.")
-        print("="*60 + "\n")
-        
-        # Grabar poses (o leerlas en el caso del robot virtual)
-        q_vals, _ = self.grabar_poses(n_puntos, ajuste=True, q_list=q_test)
-        
-        # Calcular el workobject
-        print(f"\n[Calculando] Procesando geometría ({method})...")
-        wobj_calculated = self.cobot_tb.teach_wobj(q_vals, tool, method=method)
-        print(f"[Resultado] Wobj:\n{wobj_calculated}")
-        
-        # Delegar guardado
-        qs_to_save = q_vals if save_q else None
-        self._save_se3_definition(
-            folder="Workobjects",
-            filename=filename,
-            var_name=wobj_name,
-            se3_obj=wobj_calculated,
-            q_vals=qs_to_save
-            )
-
-        return wobj_calculated
-
-    def teach_and_save_TCP(self, filename: str, tcp_name: str, save_q: bool = False, q_test: list = None) -> SE3:
-        """
-        Enseña un TCP con el método de los 4 puntos y lo guarda en carpeta "TCPs" dentro del proyecto.
-
-        Args:
-            filename (str) : Nombre del archivo .py (sin .py opcional).
-            tcp_name (str) : Nombre de la variable.
-            save_q (bool) : Si `True`, guarda los q usados en la enseñanza en un archivo separado.
-            q_test (list, optional) : Vectores de variables articulares considerados como punto de enseñanza. Se utiliza en el robot virtual.
-
-        Returns:
-            tcp_calculated (SE3) : Objeto SE3 que representa la traslación al TCP enseñado.
-        """
-        print("\n" + "="*60)
-        print(f"  ENSEÑANZA DE TCP: {tcp_name}")
-        print("="*60 + "\n")
-
-        # Obtener datos físicos: 4 veces el mismo punto con orientaciones distintas
-        q_vals, _ = self.grabar_poses(4, ajuste=True, q_list = q_test)
-
-        print(f"\n[Calculando] Procesando geometría TCP...")
-        tcp_result_tuple = self.cobot_tb.TCP_4puntos(q_vals)
-        
-        _, p_tool_real, _, _, rmse = tcp_result_tuple
-
-        print(f"[Resultado] TCP (Traslación): {p_tool_real}")
-        print(f"[Calidad]   RMSE: {rmse:.5f}")
-
-        # Guardar el TCP con helper específico
-        qs_to_save = q_vals if save_q else None
-
-        self._save_tcp_definition(
-            folder="TCPs",
-            filename=filename,
-            var_name=tcp_name,
-            tcp_data=tcp_result_tuple,
-            q_vals=qs_to_save
-        )
-
-        # Se devuelve la traslación, permitiendo guardarlo en una variable
-        return SE3.Trans(p_tool_real)
-
-    @abstractmethod
-    def grabar_poses(self, cantidad: int, ajuste: bool = False, q_list: list = None):
-        """
-        Grabación de poses del robot.
-
-        El comportamiento varía según la implementación:
-        
-        - **ROSManager**: Se reconocen las poses dadas por la lista `q_list` que contiene los vectores de variables articulares.
-        - **MyCobotController**: Se inicia la rutina de grabación de poses manual en el robot.
-
-        Args:
-            cantidad (int): Cantidad de poses a grabar.
-            ajuste (bool): Si es True, permite ajuste interactivo de cada pose antes de grabarla a través de un joystick.
-            q_list (list, optional): Lista de vectores articulares para simular la grabación (solo en ROSManager).
-        """
-        pass
-
-    def joystick_adjust(self, q: list, mover_callback, step_fino: float = 5.0, step_grueso: float = 10.0):
-        """
-        Ajuste interactivo de una pose emulando el comportamiento de un joystick con el teclado.
-        Al presionar las teclas se genera un nuevo robtarget desplazado de la posición actual respecto al workobject (offset).
-        Luego se calcula la cinemática inversa para enviar el movimiento al robot. Si falla el cálculo del PCI
-        se recupera el último robtarget válido.
-
-        Args:
-            q (list or np.ndarray): Vector de variables articulares inicial.
-            mover_callback (function): Función que mueve el robot (ej: ROSManager.MoveJ).
-            step_fino (float): Paso fino para desplazamientos en mm.
-            step_grueso (float): Paso grueso para desplazamientos en mm.
-
-        Returns:
-            robt (RobTarget): RobTarget final luego de los ajustes.
-
-        Control:
-            - Flechas: ejes X e Y.
-            - PgUp/PgDn: eje Z.
-            - Shift + flecha/PgUp/PgDn = movimiento de paso grueso.
-            - Esc = salir.
-        """
-        # Calcular la pose inicial y generar el robtarget
-        print(f'Pose recibida = {q}')
-        pose = self.cobot_tb.fkine(q)
-        robt = RobTarget(pose, self.cobot_tb.calc_conf(q))
-        print(f"RobTarget inicial: \n{robt.pose} | Configuración: {robt.config}")
-        paso = step_fino
-
-        print("\n--- Modo joystick ---")
-        print("Flechas = mover XY | PgUp/PgDn = mover Z | Shift = paso grueso | Esc = salir")
-
-        def on_press(key):
-            nonlocal robt, paso
-            # Guardar el estado actual antes de desplazarlo
-            robt_backup = robt
-            # Desplazamiento según la tecla presionada usando robtarget.offset()
-            try:
-                if key == keyboard.Key.shift:
-                    paso = step_grueso
-                elif key == keyboard.Key.up:
-                    robt = robt.offset(dy=paso)
-                elif key == keyboard.Key.down:
-                    robt = robt.offset(dy=-paso)
-                elif key == keyboard.Key.left:
-                    robt = robt.offset(dx=-paso)
-                elif key == keyboard.Key.right:
-                    robt = robt.offset(dx=paso)
-                elif key == keyboard.Key.page_up:
-                    robt = robt.offset(dz=paso)
-                elif key == keyboard.Key.page_down:
-                    robt = robt.offset(dz=-paso)
-                elif key == keyboard.Key.esc:
-                    return False
-                print(f"RobTarget ajustado: \n{robt.pose} | Configuración: {robt.config}")
-
-                # Ejecutar el movimiento: se puede elegir MoveJ o MoveC según el caso
-                mover_callback(robt)
-                
-            except IKineError as e:
-                # Si falla el PCI se recupera el último robtarget con solución válida para continuar desplazando desde el mismo
-                print(f'Error con el movimiento del robot: {e}. Restaurando a la última pose válida...')
-                robt = robt_backup
-            except Exception as e:
-                print(f'Error inesperado: {e}. Restaurando a la última pose válida...')
-                robt = robt_backup
-
-        def on_release(key):
-            # Shift debe mantenerse presionado para movimientos de paso grueso
-            nonlocal paso
-            if key == keyboard.Key.shift:
-                paso = step_fino
-
-        with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
-            listener.join()
-
-        return robt
-    
     def _check_limits(self, trajectory_arm: np.ndarray, unit: str = 'rad'):
         """
         Chequea que, para una trayectoria dada, cada valor de q esté dentro de los límites admisibles para el robot y notifica.
@@ -647,7 +696,7 @@ class BaseRobotController(ABC):
                 ejes = ", ".join(map(str, q_limit))
                 self.logger.warning(f"Se sobrepasan límites en los ejes: {ejes}")
     
-    def _manipulabilidad(self, objetivo, wobj: SE3, tool: SE3, q_unit = 'rad', debug = False):
+    def _manipulability(self, objetivo, wobj: SE3, tool: SE3, q_unit = 'rad', debug = False):
         """
         Chequeo de manipulabilidad en la pose de destino. Puede analizarse Robtarget o un vector de variables articulares.
 
@@ -697,42 +746,17 @@ class BaseRobotController(ABC):
         
         return W_ratio
 
-    def pose_to_matrix(self, pose):
-        """
-        Convierte pose dada como lista [x, y, z, rx, ry, rz] en una matriz homogénea SE3.
-
-        Args:
-            pose (list): Lista con 6 elementos [x, y, z, rx, ry, rz] en grados.
-        Returns:
-            T_se3 (SE3): Matriz homogénea SE3.
-        """
-        x, y, z, rx, ry, rz = pose
-        rx, ry, rz = np.deg2rad([rx, ry, rz])
-        T_se3 = SE3(x, y, z) * SE3.RPY([rx, ry, rz], order='zyx')
-        return T_se3
-
-    def matrix_to_pose(self, T_matrix):
-        """
-        Convierte una matriz homogénea SE3 en lista [x, y, z, rx, ry, rz] en grados.
-        
-        Args:
-            T_matrix (np.ndarray or SE3): Matriz homogénea SE3.
-        Returns:
-            pose (list): Lista con 6 elementos [x, y, z, rx, ry, rz] en grados.
-        """
-        T = SE3(T_matrix)
-        x, y, z = T.t
-        # Extraer rotación como RPY (en radianes), orden ZYX
-        rx, ry, rz = T.rpy(order='zyx', unit='rad')
-        # Conversión a grados
-        rx, ry, rz = np.rad2deg([rx, ry, rz])
-        return [x, y, z, rx, ry, rz]
-
 # Instanciar clases de ROS solo si se encuentra disponible
 if ROS_OK or TYPE_CHECKING:
 
     # Declaración global de nombres de articulaciones
-    joint_names = ['joint2_to_joint1', 'joint3_to_joint2', 'joint4_to_joint3', 'joint5_to_joint4', 'joint6_to_joint5', 'joint6output_to_joint6', 'gripper_controller']
+    joint_names = ['joint2_to_joint1',
+                   'joint3_to_joint2',
+                   'joint4_to_joint3',
+                   'joint5_to_joint4',
+                   'joint6_to_joint5',
+                   'joint6output_to_joint6',
+                   'gripper_controller']
 
     class joint_pub(Node):
         """
@@ -740,7 +764,7 @@ if ROS_OK or TYPE_CHECKING:
         """
         def __init__(self):
             super().__init__('trajectory_publisher')
-            self.publisher = self.create_publisher(JointState, '/joint_commands', 10)
+            self.publisher = self.create_publisher(JointState, '/joint_states', 10)
 
             # Subscripción para leer estado actual
             self.create_subscription(
@@ -851,7 +875,7 @@ if ROS_OK or TYPE_CHECKING:
             """
             Elimina una terna específica del diccionario para que deje de publicarse.
             """
-            # Puede ser útil a futuro. Provoca un salto en la terna que se puede solucionar congelándola en la posición actual y 
+            # En el caso de la terna tool provoca un salto en la terna que se puede solucionar congelándola en la posición actual y 
             # cambiándole el parent a 'base' para que no se intente actualizar con el movimiento de la brida.
             if name in self.transforms:
                 del self.transforms[name]
@@ -863,7 +887,7 @@ if ROS_OK or TYPE_CHECKING:
         """
         Visualización del robot virtual en ROS. Instrucciones de movimiento, control del gripper, visualización de objetos, publicación de ternas y funcionalidades adicionales mediante MoveIt. Inicia y coordina todos los nodos correspondientes a las herramientas previas.
         """
-        moveit_adapter: 'MoveItAdapter' # Typehinting en funciones de MoveIt
+        moveit_manager: 'MoveItManager' # Typehinting en funciones de MoveIt
 
         def __init__(self, project_path=None):
             super().__init__(project_path=project_path)
@@ -884,15 +908,15 @@ if ROS_OK or TYPE_CHECKING:
             self.JOINT_NAMES_FULL = joint_names
 
             # Funcionalidades de MoveIt (opcionales)
-            self.moveit_adapter = None
+            self.moveit_manager = None
             if MoveIt_OK:
                 try:
-                    from MoveItAdapter import MoveItAdapter
-                    self.moveit_adapter = MoveItAdapter(
+                    from MoveItManager import MoveItManager
+                    self.moveit_manager = MoveItManager(
                         project_path=self.project_root,
                         joint_names=self.JOINT_NAMES_FULL
                         )
-                    self.moveit_adapter.ROSManager_ref = self
+                    self.moveit_manager.ROSManager_ref = self
                 except Exception as e:
                     self.logger.error(f"Error a inicializar MoveIt: {e}")
             else:
@@ -911,8 +935,8 @@ if ROS_OK or TYPE_CHECKING:
             self.executor.add_node(self.node_obj)
 
             # Permitir funcionamiento sin MoveIt
-            if self.moveit_adapter is not None:
-                self.executor.add_node(self.moveit_adapter)
+            if self.moveit_manager is not None:
+                self.executor.add_node(self.moveit_manager)
 
             # Arranque del executor en un hilo aparte
             self.executor_thread = threading.Thread(target=self.executor.spin, daemon=True)
@@ -921,6 +945,7 @@ if ROS_OK or TYPE_CHECKING:
            # Esperar hasta tener el primer estado articular
             while self.node_joint.q_current is None:
                 time.sleep(0.1)
+
             self.q_current = self.node_joint.q_current
 
             # Definición vacía de la API pymycobot por si se quiere acceder en modo ROS
@@ -962,14 +987,14 @@ if ROS_OK or TYPE_CHECKING:
                 traj_arm_subsampled = np.vstack([traj_arm_subsampled, full_traj[-1]])
 
             # Chequear manipulabilidad
-            self._manipulabilidad(robtarget, wobj, tool)
+            self._manipulability(robtarget, wobj, tool)
 
             # Publicación de las poses delegada al helper
             self._execute_arm_trajectory(traj_arm_subsampled, robt_name, wobj_name)
 
-        def MoveC(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3(), wobj_name='MoveC_wobj', robt_name='MoveC_robt'):
+        def MoveL(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3(), wobj_name='MoveL_wobj', robt_name='MoveL_robt'):
             """
-            Implementación de MoveC para el robot virtual (ROS2).
+            Implementación de MoveL para el robot virtual (ROS2).
             
             Genera una trayectoria interpolada en el espacio articular, visualiza 
             las ternas "tool", "workobject" y "robtarget" en RViz mediante TFPublisher y ejecuta el movimiento virtual
@@ -1000,9 +1025,26 @@ if ROS_OK or TYPE_CHECKING:
             # Publicación de las poses con el helper
             self._execute_arm_trajectory(traj_arm_subsampled, robt_name, wobj_name)
         
-        def MoveJAngles(self, q, spd = 30, unit = 'deg'):
+        def GripperState(self, apertura: float, spd: int = 30):
             """
-            Implementación de MoveJAngles para el robot virtual (ROS2).
+            Implementación de GripperState para el robot virtual (ROS2). La pinza se mueve de forma instantánea,
+            sin interpolar posiciones.      
+            """
+            if not (0 <= apertura <= 100):
+                raise ValueError("La apertura debe estar entre 0 y 100%.")
+            
+            # Mapear al rango que interpreta ROS: -0.7 a 0.3
+            val_gripper = apertura / 100 - 0.7
+
+            q_full = self.get_current_q(prefer_gripper=True)
+            q_full[6] = val_gripper
+
+            # Enviar como movimiento de un solo punto
+            self._send_move([q_full], "Gripper", "Tool")
+
+        def MoveJ_q(self, q, spd = 30, unit = 'deg'):
+            """
+            Implementación de MoveJ_q para el robot virtual (ROS2).
 
             Genera una trayectoria interpolada en el espacio de variables articulares
             desde la pose actual hasta el vector `q` dado como objetivo. Luego la publica mediante
@@ -1029,72 +1071,11 @@ if ROS_OK or TYPE_CHECKING:
             if not np.allclose(traj_arm_subsampled[-1], full_traj[-1]):
                 traj_arm_subsampled = np.vstack([traj_arm_subsampled, full_traj[-1]])
             
-            self._execute_arm_trajectory(traj_arm_subsampled, "MoveJAngles", "JointSpace")
-        
-        def MostrarTerna(self, terna, nombre='terna1', ref = SE3()):
-            """
-            Muestra en RViz una terna dada por un objeto SE3 definida respecto a `ref`.
+            self._execute_arm_trajectory(traj_arm_subsampled, "MoveJ_q", "JointSpace")
 
-            Args:
-                terna (SE3): Objeto SE3 a mostrar.
-                nombre (str): Nombre de la terna en RViz.
-                ref (SE3): Referencia respecto a la cual se define la terna.
+        def get_current_q(self, prefer_gripper=False, get_robt=False, tool: SE3 = SE3(), wobj: SE3 = SE3(), timeout=2.0):
             """
-            self.node_tf.add_wobj(ref*terna, nombre)
-            time.sleep(1.0) # Esperar para que se procese la terna
-
-        def VerPose(self, target, tool: SE3 | None = SE3(), wobj: SE3 = SE3(), wobj_name='wobj1', robt_name='robt1'):
-            """
-            Muestra un robtarget en RViz de forma inmediata, sin generar trayectorias.
-
-            Args:
-                target (RobTarget or list/np.ndarray): Robtarget a mostrar o vector de variables articulares.
-                tool (SE3, optional): Herramienta aplicada. Si no se especifica, se asume nula (brida).
-                wobj (SE3): Workobject aplicado.
-                wobj_name (str): Nombre del workobject para visualizar en RViz.
-                robt_name (str): Nombre del robtarget para visualizar en RViz.
-            """
-            # Determinar el q asociado al robtarget 
-            # Si se recibe un q directamente entonces se usa dicho argumento
-            q_sol = self._parse_to_joint_list(target, tool, wobj)
-           
-            # Se agregan también las ternas del workobject y robtarget
-            self.node_tf.add_wobj(wobj, wobj_name)
-            # Si se pasa un robtarget se publica su pose asociada
-            if isinstance(target, RobTarget):
-                self.node_tf.add_robt(target.pose, robt_name, wobj_name)
-            # Si se pasa un q, se calcula la pose
-            else:
-                self.node_tf.add_robt(self.cobot_tb.fkine(q_sol)*tool, robt_name, wobj_name)
-            
-            self.node_tf.add_robt(tool, 'tool', 'link6')
-            
-            q_arm_target = np.array([q_sol]) 
-
-            # El helper publica la pose
-            self._execute_arm_trajectory(q_arm_target, robt_name, wobj_name)
-            time.sleep(0.1)
-        
-        def _send_move(self, qtraj_a, robt_name = 'robt', wobj_name = 'wobj', dt=0.1):
-            """
-            Helper interno para enviar una trayectoria articular al nodo joint_pub.
-
-            Args:
-                qtraj_a (lista, np.ndarray): trayectoria articular del brazo.
-                robt_name (str): Nombre del robtarget en RViz.
-                wobj_name (str): Nombre del workobject en RViz.
-                dt (float): Tiempo de espera entre puntos para la publicación.
-            """
-            self.logger.info(f">>> Move: {robt_name} @ {wobj_name}")
-
-            self.node_joint.publish_trajectory(qtraj_a, joint_names, dt)
-
-            if len(qtraj_a) > 0:
-                self.q_current = qtraj_a[-1].copy()
-        
-        def get_current_q(self, prefer_gripper=False, timeout=2.0, get_robt=False, tool: SE3 = SE3(), wobj: SE3 = SE3()):
-            """
-            Devuelve q_current ordenado como np.array o None si timeout. Posibilita la generación de un robtarget a partir de la pose actual.
+            Devuelve el vector de variables articulares correspondiente a la pose actual ordenado como np.array, permitiendo generar un robtarget a partir de la misma.
             
             A veces MoveIt altera el orden de los joints y devuelve un que no corresponde con la definición de joint_names. La función incluye un método para mapear los nombres y variables articulares, logrando compatibilidad con `self.q_current`.
 
@@ -1102,7 +1083,9 @@ if ROS_OK or TYPE_CHECKING:
                 prefer_gripper (bool): Si `True`, devuelve el estado del gripper junto con las 6 variables articulares del brazo.
                 timeout (float): Tiempo máximo de espera en segundos.
                 get_robt (bool): Si `True`, devuelve también el RobTarget actual.
-                tool (SE3): Herramienta aplicada para generar el RobTarget (si get_robt=True).
+                tool (SE3): Herramienta aplicada para generar el RobTarget (si `get_robt=True`).
+                wobj (SE3): Workobject aplicado (si `get_robt=True`).
+                timeout (float): Tiempo máximo de espera en segundos.
 
             Returns:
                 ordered_q (array): Vector de variables articulares.
@@ -1140,26 +1123,59 @@ if ROS_OK or TYPE_CHECKING:
             
             # Timeout
             self.node_joint.get_logger().warning("get_current_q: timeout esperando joint_states")
-            return None
-
-        def GripperState(self, apertura: float, spd: int = 30):
-            """
-            Implementación de GripperState para el robot virtual (ROS2). La pinza se mueve de forma instantánea,
-            sin interpolar posiciones.      
-            """
-            if not (0 <= apertura <= 100):
-                raise ValueError("La apertura debe estar entre 0 y 100%.")
-            
-            # Mapear al rango que interpreta ROS: -0.7 a 0.3
-            val_gripper = apertura / 100 - 0.7
-
-            q_full = self.get_current_q(prefer_gripper=True)
-            q_full[6] = val_gripper
-
-            # Enviar como movimiento de un solo punto
-            self._send_move([q_full], "Gripper", "Tool")
+            return None     
         
-        def testPose(self, robt: SE3, tool: SE3, wobj: SE3):
+        def show_tf(self, terna, nombre='terna1', ref = SE3()):
+            """
+            Muestra en RViz una terna dada por un objeto SE3 definida respecto a `ref`.
+
+            Args:
+                terna (SE3): Objeto SE3 a mostrar.
+                nombre (str): Nombre de la terna en RViz.
+                ref (SE3): Referencia respecto a la cual se define la terna.
+            """
+            self.node_tf.add_wobj(ref*terna, nombre)
+            time.sleep(1.0) # Esperar para que se procese la terna
+
+        def hide_tf(self, terna = 'tool'):
+            """
+            Limpia específicamente una de la visualización. Por defecto se aplica a la terna `tool`.
+            """
+            self.node_tf.remove_transform(terna)
+
+        def view_pose(self, target, tool: SE3 | None = SE3(), wobj: SE3 = SE3(), wobj_name='wobj1', robt_name='robt1'):
+            """
+            Muestra un robtarget en RViz de forma inmediata, sin generar trayectorias.
+
+            Args:
+                target (RobTarget or list/np.ndarray): Robtarget a mostrar o vector de variables articulares.
+                tool (SE3, optional): Herramienta aplicada. Si no se especifica, se asume nula (brida).
+                wobj (SE3): Workobject aplicado.
+                wobj_name (str): Nombre del workobject para visualizar en RViz.
+                robt_name (str): Nombre del robtarget para visualizar en RViz.
+            """
+            # Determinar el q asociado al robtarget 
+            # Si se recibe un q directamente entonces se usa dicho argumento
+            q_sol = self._parse_to_joint_list(target, tool, wobj)
+           
+            # Se agregan también las ternas del workobject y robtarget
+            self.node_tf.add_wobj(wobj, wobj_name)
+            # Si se pasa un robtarget se publica su pose asociada
+            if isinstance(target, RobTarget):
+                self.node_tf.add_robt(target.pose, robt_name, wobj_name)
+            # Si se pasa un q, se calcula la pose
+            else:
+                self.node_tf.add_robt(self.cobot_tb.fkine(q_sol)*tool, robt_name, wobj_name)
+            
+            self.node_tf.add_robt(tool, 'tool', 'link6')
+            
+            q_arm_target = np.array([q_sol]) 
+
+            # El helper publica la pose
+            self._execute_arm_trajectory(q_arm_target, robt_name, wobj_name)
+            time.sleep(0.1)
+        
+        def view_pose_configs(self, robt: SE3, tool: SE3 = SE3(), wobj: SE3 = SE3()):
             """
             Permite analizar todas las configuraciones posibles para una pose en RViz mediante un menu interactivo. No se analizan colisiones.
 
@@ -1201,18 +1217,18 @@ if ROS_OK or TYPE_CHECKING:
                     idx = int(user_in)
                     if 1 <= idx <= len(confs):
                         last_conf = confs[idx - 1]
-                        self.logger.info(f"Configuración seleccionada #{idx}: {last_conf}")
+                        print(f"Configuración seleccionada #{idx}: {last_conf}")
 
                         # Creación y visualización del robtarget
                         robt_sel = RobTarget(robt.pose, list(last_conf))
-                        self.VerPose(robt_sel, tool, wobj)
+                        self.view_pose(robt_sel, tool, wobj)
 
                     else:
                         print(f"Índice fuera de rango. Elija entre 1 y {len(confs)}.")
                 except ValueError:
                     print(f"Entrada inválida, use un número entre 1 y {len(confs)} o 'q' para salir.")
 
-        def explore_ik_configs(self, robt, tool: SE3=SE3(), wobj: SE3=SE3(), filtrar: bool=True):
+        def check_pose_configs(self, robt, tool: SE3=SE3(), wobj: SE3=SE3(), filtrar: bool=True):
             """
             Recorre todas las configuraciones con solución analítica del PCI,
             evalúa colisiones mediante MoveIt y muestra un menú interactivo.
@@ -1221,7 +1237,7 @@ if ROS_OK or TYPE_CHECKING:
                 robt (RobTarget): Pose a analizar.
                 tool (SE3): Herramienta aplicada.
                 wobj (SE3): Workobject aplicado.
-                filtrar (bool) : `True` para filtrar colisiones. `False` para visualizar todas las configuraciones.
+                filtrar (bool) : `True` para filtrar colisiones. `False` para visualizar todas las configuraciones que satisfacen el PCD.
             """
             # Obtención de configuraciones a través del PCI
             configs = robt.find_valid_configs(tool, wobj)
@@ -1239,7 +1255,7 @@ if ROS_OK or TYPE_CHECKING:
                 collision_free = True   # Por defecto se asume sin colisión para que el filtrado no la elimine
                 # Análisis en MoveIt
                 try:
-                    collision_free = bool(self.moveit_adapter.check_collision(target, tool, wobj))
+                    collision_free = bool(self.moveit_manager.check_collision(target, tool, wobj))
                 except Exception as e:
                     print(f"Error al chequear colisión para {conf}: {e}")
 
@@ -1291,49 +1307,13 @@ if ROS_OK or TYPE_CHECKING:
                     last_conf = idx - 1
                     print(f"Configuración seleccionada: {conf['conf']} → {'OK' if conf['ok'] else 'En colisión'}")
                     # Mostrar en RViz
-                    self.moveit_adapter.apply_goal_state(conf['target'], tool, wobj)
+                    self.moveit_manager.move_goal(conf['target'], tool, wobj)
                 else:
                     print("Índice fuera de rango. Intente nuevamente.")
 
-        def OcultarTerna(self, terna = 'tool'):
-            """
-            Limpia específicamente una de la visualización. Por defecto se aplica a la terna `tool`.
-            """
-            self.node_tf.remove_transform(terna)
-
-        def publish_goal_tf(self, q: list, tool: SE3, wobj: SE3, frame_name: str, tf_reference: str):
-            """
-            Publica el robtarget (pose del TCP) correspondiente a q como un frame TF llamado `frame_name`.
-            Args:
-                q (lista/np.array) : (6 o 7 elementos). Si tiene 7, se usa solo 6 primeros para FK.
-            """
-            # Tomar los primeros 6 q si hay 7 (gripper)
-            q6 = q[:6]
-
-            # Calcular la terna correspondiente al robtarget
-            T = self.cobot_tb.fkine(q6) * tool
-
-            # Si se definió un workobject, se lo publica junto con el robtarget asociado
-            if wobj is not SE3():
-                wobj_name = tf_reference
-                self.node_tf.add_wobj(wobj, wobj_name)
-            # Si no se definió un workobject, se asume referido a la base y se publica solamente el robtarget
-            else:
-                wobj_name = 'base'
-
-            self.node_tf.add_robt(wobj.inv() * T, frame_name, wobj_name)
-
         def traj_moveit(self, archivo: str, traj_name: str = "TRAJ", tool = SE3()):
             """
-            Ejecuta una trayectoria guardada en un archivo .py como las que se pueden generar en MoveIt.
-            
-            Args:
-                archivo (str): Nombre del archivo .py (ej: 'movimientos_llavero')
-                traj_name (str): Nombre de la variable dentro del archivo (ej: 'PICK_UP')
-                tool (SE3): Herramienta.
-
-            Returns:
-                last_robt (RobTarget): RobTarget correspondiente al último punto de la trayectoria ejecutada.
+            Implementación de `traj_moveit` en el robot virtual. La trayectoria se lee y se reproduce en RViz.
             """
             # Mostrar terna tool
             self.node_tf.add_robt(tool, 'tool', 'link6')
@@ -1367,15 +1347,55 @@ if ROS_OK or TYPE_CHECKING:
 
             return last_robt
         
+        def add_scene_object(self, name: str, pose_init: tuple, size: tuple, 
+                         color: tuple = (0.5, 0.5, 0.5, 1.0),
+                         shape: int = 1, movable: bool = True, 
+                         mesh: str = None, rot_euler: tuple = (0.0, 0.0, 0.0)):
+            """
+            Agrega un marker a la escena de simulación (RViz).
+        
+            Permite insertar primitivas geométricas (cubos, esferas) o mallas (STL) que pueden
+            ser manipuladas por el robot si 'movable' es True.
+
+            Args:
+                name (str): Identificador único del maker.
+                pose_init (tuple): Posición inicial (x, y, z) en metros.
+                size (tuple): Escala del maker (scale_x, scale_y, scale_z).
+                color (tuple, optional): Color RGBA normalizado (0.0 a 1.0). Default: Gris.
+                shape (int, optional): Tipo de geometría. Usar clase 'Shapes' del SDK (Shapes.CUBE, por ejemplo).
+                movable (bool, optional): Si es True, el gripper podrá "tomar" este maker. Default: True.
+                mesh (str, optional): Ruta absoluta al archivo de malla (ej: "file:///ruta/pieza.stl"). Requerido si shape=Shapes.MESH.
+                rot_euler (tuple, optional): Orientación inicial (Roll, Pitch, Yaw) en radianes.
+
+            Examples:
+                - robot.add_scene_object("caja", (0.2, 0, 0), (0.05, 0.05, 0.05), shape=Shapes.CUBE)
+
+                - robot.add_scene_object(name="mate", pose_init=(280.0e-3, -210e-3, 180e-3),
+                  size=(1.0e-3, 1.0e-3, 1.0e-3), color=(154/255, 114/255, 71/255, 1.0), shape=MESH,
+                  movable=False,
+                  mesh="file:///home/user/colcon_ws/src/mycobot_ros2/mycobot_320/mycobot_320/scripts/Mate/Mate.STL", rot_euler=(np.pi/2, 0, -0.48))
+            """
+            # Pasamos los argumentos explícitamente al nodo interno
+            self.node_obj.add_object(
+                name=name, pose_init=pose_init, size=size, color=color,
+                shape=shape, movable=movable, mesh=mesh, rot_euler=rot_euler
+            )
+
         def load_scene(self, scene_filename: str, subfolder: str = ""):
             """
             Busca el archivo de escena en la misma carpeta que la rutina,
             importa 'setup_scene' y la ejecuta.
 
+            Args:
+                scene_filename (str): Nombre del archivo de definición de la escena.
+                subfolder (str): Subcarpeta donde se encuentra el archivo.
+
             Raises:
                 FileNotFoundError: Si no se encuentra el archivo.
                 AttributeError: Si el archivo no tiene la función 'setup_scene(robot)'.
             """
+            self.clear_scene()
+            
             print(f"[Sim] Intentando cargar escena: {scene_filename}...")
             
             try:
@@ -1383,7 +1403,8 @@ if ROS_OK or TYPE_CHECKING:
                 setup_func = self.load_data(
                     subfolder=subfolder, 
                     filename=scene_filename, 
-                    var_name="setup_scene"
+                    var_name="setup_scene",
+                    verbose=True
                 )
                 
             except FileNotFoundError:
@@ -1398,6 +1419,68 @@ if ROS_OK or TYPE_CHECKING:
                 
             except Exception as e:
                 self.logger.error(f"[Sim] Error de ejecución dentro de '{scene_filename}': {e}")
+        
+        def clear_scene(self):
+            """Elimina todos los objetos de la escena actual."""
+            self.node_obj.clear_scene()
+
+        def toggle_ros_connection(self, enable: bool):
+            """
+            Activa o desactiva la comunicación de `ros2_control` con el robot. Permite visualzar movimientos del generador de trayectorias propio (`MoveJ`, `MoveC`) en el paquete de MoveIt.
+            Equivalente a: ros2 control switch_controllers --activate/deactivate joint_state_broadcaster
+            
+            Args:
+                enable (bool): 
+                `False` libera el robot del control de MoveIt.
+                `True` cede el control a MoveIt, rehabilitando MotionPlanning.
+            """
+            broadcaster_name = "joint_state_broadcaster"
+            
+            if enable:
+                self.logger.info("Re-activando joint_state_broadcaster...")
+                return self.moveit_manager._switch_controllers(
+                    activate_list=[broadcaster_name],
+                    deactivate_list=[],
+                    strictness=1
+                )
+            else:
+                self.logger.info("Desactivando joint_state_broadcaster...")
+                return self.moveit_manager._switch_controllers(
+                    activate_list=[],
+                    deactivate_list=[broadcaster_name],
+                    strictness=1
+                )
+
+        def teach_poses(self, cantidad, ajuste=False, q_list = None):
+            """
+            Implementación de `teach_poses` en ROS.
+            Se debe pasar una lista en grados para lograr compatibilidad con métodos matemáticos. 
+            Si los datos obtenidos provienen de la función `teach_poses` del cobot, ya se encuentran en el formato apropiado.
+
+            Raises:
+                ValueError: Si la cantidad de vectores articulares no coincide con la requerida.
+            """
+            self.logger.info("Grabación de poses en ROS: usando lista de vectores articulares...")
+            if len (q_list) != cantidad:
+                raise ValueError("La cantidad de vectores articulares no coincide con la requerida por el método.")
+            return q_list, 0
+
+        def _send_move(self, qtraj_a, robt_name = 'robt', wobj_name = 'wobj', dt=0.1):
+            """
+            Helper interno para enviar una trayectoria articular al nodo joint_pub.
+
+            Args:
+                qtraj_a (lista, np.ndarray): trayectoria articular del brazo.
+                robt_name (str): Nombre del robtarget en RViz.
+                wobj_name (str): Nombre del workobject en RViz.
+                dt (float): Tiempo de espera entre puntos para la publicación.
+            """
+            self.logger.info(f">>> Move: {robt_name} @ {wobj_name}")
+
+            self.node_joint.publish_trajectory(qtraj_a, joint_names, dt)
+
+            if len(qtraj_a) > 0:
+                self.q_current = qtraj_a[-1].copy()
 
         def _execute_arm_trajectory(self, trajectory_arm_6dof: np.ndarray, robt_name: str, wobj_name: str):
             """
@@ -1427,20 +1510,6 @@ if ROS_OK or TYPE_CHECKING:
 
             # Publicar las poses
             self._send_move(trajectory_full, robt_name, wobj_name)
-
-        def grabar_poses(self, cantidad, ajuste=False, q_list = None):
-            """
-            Implementación de `grabar_poses` en ROS.
-            Se debe pasar una lista en grados para lograr compatibilidad con métodos matemáticos. 
-            Si los datos obtenidos provienen de la función `grabar_poses` del cobot, ya se encuentran en el formato apropiado.
-
-            Raises:
-                ValueError: Si la cantidad de vectores articulares no coincide con la requerida.
-            """
-            self.logger.info("Grabación de poses en ROS: usando lista de vectores articulares...")
-            if len (q_list) != cantidad:
-                raise ValueError("La cantidad de vectores articulares no coincide con la requerida por el método.")
-            return q_list, 0
         
         def _get_sim_skip(self, speed: int) -> int:
             """
@@ -1492,71 +1561,27 @@ if ROS_OK or TYPE_CHECKING:
             elif isinstance(target, (list, np.ndarray, tuple)):
                 return list(target)
 
-        def toggle_ros_connection(self, enable: bool):
+        def _publish_goal_tf(self, q: list, tool: SE3, wobj: SE3, frame_name: str, tf_reference: str):
             """
-            Activa o desactiva la comunicación de ROS con el robot.
-            Equivalente a: ros2 control switch_controllers --activate/deactivate joint_state_broadcaster
-            
-            Uso:
-                - enable=False: Libera el robot para controlarlo externamente o manualmente.
-                                (RViz dejará de actualizarse).
-                - enable=True:  Retoma la lectura de estados en ROS.
-            """
-            broadcaster_name = "joint_state_broadcaster"
-            
-            if enable:
-                self.logger.info("Re-activando joint_state_broadcaster...")
-                return self.moveit_adapter.switch_controllers(
-                    activate_list=[broadcaster_name],
-                    deactivate_list=[],
-                    strictness=1
-                )
-            else:
-                self.logger.info("Desactivando joint_state_broadcaster...")
-                return self.moveit_adapter.switch_controllers(
-                    activate_list=[],
-                    deactivate_list=[broadcaster_name],
-                    strictness=1
-                )
-            
-        def add_scene_object(self, name: str, pose_init: tuple, size: tuple, 
-                         color: tuple = (0.5, 0.5, 0.5, 1.0),
-                         shape: int = 1, movable: bool = True, 
-                         mesh: str = None, rot_euler: tuple = (0.0, 0.0, 0.0)):
-            """
-            Agrega un objeto visual e interactivo a la escena de simulación (RViz).
-        
-            Permite insertar primitivas geométricas (cubos, esferas) o mallas (STL) que pueden
-            ser manipuladas por el robot si 'movable' es True.
-
+            Publica el robtarget (pose del TCP) correspondiente a q como un frame TF llamado `frame_name`.
             Args:
-                name (str): Identificador único del objeto.
-                pose_init (tuple): Posición inicial (x, y, z) en metros.
-                size (tuple): Escala del objeto (scale_x, scale_y, scale_z).
-                color (tuple, optional): Color RGBA normalizado (0.0 a 1.0). Default: Gris.
-                shape (int, optional): Tipo de geometría. Usar clase 'Shapes' del SDK. Default: CUBE.
-                movable (bool, optional): Si es True, el gripper podrá "tomar" este objeto. Default: True.
-                mesh (str, optional): Ruta absoluta al archivo de malla (ej: "file:///ruta/pieza.stl"). 
-                                    Requerido si shape=Shapes.MESH.
-                rot_euler (tuple, optional): Orientación inicial (Roll, Pitch, Yaw) en radianes.
-
-            Examples:
-                - robot.add_scene_object("caja", (0.2, 0, 0), (0.05, 0.05, 0.05), shape=Shapes.CUBE)
-
-                - robot.add_scene_object(name="mate", pose_init=(280.0e-3, -210e-3, 180e-3),
-                  size=(1.0e-3, 1.0e-3, 1.0e-3), color=(154/255, 114/255, 71/255, 1.0), shape=MESH,
-                  movable=False,
-                  mesh="file:///home/user/colcon_ws/src/mycobot_ros2/mycobot_320/mycobot_320/scripts/Mate/Mate.STL", rot_euler=(np.pi/2, 0, -0.48))
+                q (lista/np.array) : (6 o 7 elementos). Si tiene 7, se usa solo 6 primeros para FK.
             """
-            # Pasamos los argumentos explícitamente al nodo interno
-            self.node_obj.add_object(
-                name=name, pose_init=pose_init, size=size, color=color,
-                shape=shape, movable=movable, mesh=mesh, rot_euler=rot_euler
-            )
+            # Tomar los primeros 6 q si hay 7 (gripper)
+            q6 = q[:6]
 
-        def clear_scene(self):
-            """Elimina todos los objetos de la escena actual."""
-            self.node_obj.clear_scene()
+            # Calcular la terna correspondiente al robtarget
+            T = self.cobot_tb.fkine(q6) * tool
+
+            # Si se definió un workobject, se lo publica junto con el robtarget asociado
+            if wobj is not SE3():
+                wobj_name = tf_reference
+                self.node_tf.add_wobj(wobj, wobj_name)
+            # Si no se definió un workobject, se asume referido a la base y se publica solamente el robtarget
+            else:
+                wobj_name = 'base'
+
+            self.node_tf.add_robt(wobj.inv() * T, frame_name, wobj_name)
 
         def shutdown(self):
             """
@@ -1606,7 +1631,7 @@ else:
             
         # Métodos vacíos solo para satisfacer a BaseRobotController si fuera estricto
         def MoveJ(self, *args, **kwargs): pass
-        def MoveC(self, *args, **kwargs): pass
+        def MoveL(self, *args, **kwargs): pass
         def GripperState(self, *args, **kwargs): pass
 
 class MyCobotController(BaseRobotController):
@@ -1640,12 +1665,6 @@ class MyCobotController(BaseRobotController):
 
         self._server_ref = None
 
-    def set_server_observer(self, server):
-        """
-        Observer que permite reproducir los comandos enviados a la pinza cuando se trabaja con el modo de transmisión en vivo a otra PC con ROS.
-        """
-        self._server_ref = server
-
     def MoveJ(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3(), wobj_name='MoveJ_wobj', robt_name='MoveJ_robt'):
         """
         Implementación de MoveJ para el robot físico MyCobot320. 
@@ -1663,9 +1682,9 @@ class MyCobotController(BaseRobotController):
 
         self.mc.sync_send_angles(np.degrees(q_pose).tolist(), speed)
 
-    def MoveC(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3(), wobj_name='MoveC_wobj', robt_name='MoveC_robt'):
+    def MoveL(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3(), wobj_name='MoveL_wobj', robt_name='MoveL_robt'):
         """
-        Implementación de MoveC para el robot físico MyCobot320. 
+        Implementación de MoveL para el robot físico MyCobot320. 
         
         Se calcula la pose objetivo usando la cinemática inversa de roboticstoolbox, se traduce a coordenadas xyzrpy
         y se envía el comando mediante la API.
@@ -1682,9 +1701,38 @@ class MyCobotController(BaseRobotController):
 
         self.mc.sync_send_coords(pose, speed, 1)
 
-    def MoveCTesting(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3(), skip: int = 10):
+    def GripperState(self, apertura: int, spd: int = 30):
         """
-        Implementación alternativa de MoveC para el robot físico.
+        Implementación de `GripperState` para el robot físico MyCobot320.
+        """
+        # Primero hay que activar el gripper con la API, luego se pide el movimiento
+        self.mc.set_gripper_mode(0)
+        
+        # Si apertura es 0 o 1 se usa la función de abrir/cerrar
+        if apertura == 0:
+            self.mc.set_gripper_state(1, spd)
+        elif apertura == 100:
+            self.mc.set_gripper_state(0, spd)
+        # Si se pide una posición intermedia la función de la API cambia
+        else:
+            self.mc.set_gripper_value(apertura, spd, 1)
+
+        # Envío del comando al observer para el modo de transmisión en vivo
+        if self._server_ref is not None:
+            self._server_ref.set_gripper_state(apertura)
+
+    def MoveJ_q(self, q, spd = 30, unit = 'rad'):
+        """
+        Implementación de MoveJ_q para el robot físico MyCobot320.
+        """
+        if unit == 'rad':
+            self.mc.sync_send_angles(np.degrees(q).tolist(), spd)
+        elif unit == 'deg':
+            self.mc.sync_send_angles(q.tolist(), spd)
+
+    def MoveL_gt(self, robtarget, speed: int = 30, tool: SE3 = SE3(), wobj: SE3 = SE3(), skip: int = 10):
+        """
+        Implementación alternativa de MoveL para el robot físico.
 
         Se genera una trayectoria con el generador cartesiano (interpolador trapezoidal + SLERP) y se envían los puntos secuencialmente.
         """
@@ -1709,88 +1757,9 @@ class MyCobotController(BaseRobotController):
             self.mc.send_angles(q.tolist(), 100)
             time.sleep(1/freq_q)
     
-    def MoveJAngles(self, q, spd = 30, unit = 'rad'):
+    def teach_poses(self, cantidad, ajuste = False, q_list=None):
         """
-        Implementación de MoveJAngles para el robot físico MyCobot320.
-        """
-        if unit == 'rad':
-            self.mc.sync_send_angles(np.degrees(q).tolist(), spd)
-        elif unit == 'deg':
-            self.mc.sync_send_angles(q.tolist(), spd)
-
-    def levantar_traj(self, archivo: str, traj_name: str = "TRAJ", tool = SE3()):
-        """
-        Lee una trayectoria generada con MoveIt y la envía al cobot.
-
-        Args:
-            archivo (str): Nombre del archivo .py.
-            traj_name (str): Nombre de la variable dentro del archivo.
-            tool (SE3): Herramienta.
-
-        Returns:
-            last_robt (RobTarget): RobTarget correspondiente al último punto de la trayectoria ejecutada.
-        """
-        # Leer variable con puntos de la trayectoria almacenados
-        traj_moveit =  self.load_data("Trayectorias", archivo, traj_name)
-        first_len = len(traj_moveit[0])
-        if first_len not in (6, 7):
-            raise ValueError(f"Dimensión inesperada en el primer punto: {first_len} (se espera 6 o 7)")
-
-        # Si la trayectoria incluye a la pinza hay que recortarla. La API no permite enviar todo en un solo comando.
-        trim_last = (first_len == 7)
-        out = []
-
-        # Revisar dimensión de puntos
-        for i, pt in enumerate(traj_moveit):
-            if len(pt) < (7 if trim_last else 6):
-                raise ValueError(f"Punto {i} tiene longitud {len(pt)} incompatible con el primer punto.")
-
-            # Se toman los 6 primeros ejes (si trim_last True/False, ambas hacen [:6])
-            arr6 = np.asarray(pt)[:6]
-            deg = np.rad2deg(arr6)
-            # Convertir a lista de floats puros
-            out.append([float(x) for x in deg])
-
-        # Modo de procesamiento de instrucciones según se reciben
-        self.mc.set_fresh_mode(1)
-        freq_q = 10 # Hz 
-        # Envío secuencial de los puntos de la trayectoria
-        for q in out:
-            self.mc.send_angles(q, 30)
-            time.sleep(1/freq_q)
-
-        # Reanuación al modo secuencial de instrucciones
-        self.mc.set_fresh_mode(0)
-        
-        # Armar el RobTarget de la pose de destino para devolverlo
-        last_q = traj_moveit[-1][:6]
-        last_robt = RobTarget.from_q(last_q, tool)
-
-        return last_robt
-
-    def GripperState(self, apertura: int, spd: int = 30):
-        """
-        Implementación de `GripperState` para el robot físico MyCobot320.
-        """
-        # Primero hay que activar el gripper con la API, luego se pide el movimiento
-        self.mc.set_gripper_mode(0)
-        
-        # Si apertura es 0 o 1 se usa la función de abrir/cerrar
-        if apertura == 0:
-            self.mc.set_gripper_state(1, spd)
-        elif apertura == 100:
-            self.mc.set_gripper_state(0, spd)
-        # Si se pide una posición intermedia la función de la API cambia
-        else:
-            self.mc.set_gripper_value(apertura, spd, 1)
-
-        # Envío del comando al observer para el modo de transmisión en vivo
-        if self._server_ref is not None:
-            self._server_ref.set_gripper_state(apertura)
-        
-    def grabar_poses(self, cantidad, ajuste = False, q_list=None):
-        """
-        Implementación de `grabar_poses` para el robot físico MyCobot320.
+        Implementación de `teach_poses` para el robot físico MyCobot320.
 
         Guía al usuario para recolectar manualmente las poses del robot liberando sus motores y ajustando, de manera opcional,
         con un joystick interactivo para mitigar el efecto del juego mecánico.        
@@ -1901,9 +1870,57 @@ class MyCobotController(BaseRobotController):
             self.logger.info(f"Q-coords {i+1}: {d}")
 
         return poses_q, poses_coord
+
+    def traj_moveit(self, archivo: str, traj_name: str = "TRAJ", tool = SE3()):
+        """
+        Implementación de `traj_moveit` en el robot real. Se lee la trayectoria y se envía punto a punto con una determinada frecuencia al cobot.
+        """
+        # Leer variable con puntos de la trayectoria almacenados
+        traj_moveit =  self.load_data("Trayectorias", archivo, traj_name)
+        first_len = len(traj_moveit[0])
+        if first_len not in (6, 7):
+            raise ValueError(f"Dimensión inesperada en el primer punto: {first_len} (se espera 6 o 7)")
+
+        # Si la trayectoria incluye a la pinza hay que recortarla. La API no permite enviar todo en un solo comando.
+        trim_last = (first_len == 7)
+        out = []
+
+        # Revisar dimensión de puntos
+        for i, pt in enumerate(traj_moveit):
+            if len(pt) < (7 if trim_last else 6):
+                raise ValueError(f"Punto {i} tiene longitud {len(pt)} incompatible con el primer punto.")
+
+            # Se toman los 6 primeros ejes (si trim_last True/False, ambas hacen [:6])
+            arr6 = np.asarray(pt)[:6]
+            deg = np.rad2deg(arr6)
+            # Convertir a lista de floats puros
+            out.append([float(x) for x in deg])
+
+        # Modo de procesamiento de instrucciones según se reciben
+        self.mc.set_fresh_mode(1)
+        freq_q = 10 # Hz 
+        # Envío secuencial de los puntos de la trayectoria
+        for q in out:
+            self.mc.send_angles(q, 30)
+            time.sleep(1/freq_q)
+
+        # Reanuación al modo secuencial de instrucciones
+        self.mc.set_fresh_mode(0)
+        
+        # Armar el RobTarget de la pose de destino para devolverlo
+        last_q = traj_moveit[-1][:6]
+        last_robt = RobTarget.from_q(last_q, tool)
+
+        return last_robt
     
     def load_scene(self, scene_filename: str, subfolder: str = ""):
         """
         Método vacío para mantener compatibilidad con BaseRobotController.
         """
         pass
+
+    def _set_server_observer(self, server):
+        """
+        Observer que permite reproducir los comandos enviados a la pinza cuando se trabaja con el modo de transmisión en vivo a otra PC con ROS.
+        """
+        self._server_ref = server

@@ -102,8 +102,8 @@ class RobTarget:
         Aplica una rototraslación al RobTarget respecto a sí mismo.
         
         Args:
-            dx, dy, dz: Desplazamientos en mm respecto a la terna del RobTarget.
-            rx, ry, rz: Rotaciones en grados respecto a la terna del RobTarget (orden 'zyx').
+            dx, dy, dz: Desplazamientos en mm respecto a su propia terna.
+            rx, ry, rz: Rotaciones en grados respecto a su propia terna (orden 'zyx').
         Returns:
             Nuevo RobTarget desplazado y rotado.
         """
@@ -121,7 +121,7 @@ class RobTarget:
     @classmethod
     def from_q(cls, q, tool: SE3 = SE3(), wobj:SE3 = SE3(), robot_model=None):
         """
-        Crea un RobTarget a partir de un vector de variables articulares, un workobject y una herramienta a partir del PCD.
+        Crea un RobTarget a partir de un vector de variables articulares, un workobject y una herramienta recurriendo al PCD.
 
         Args:
             q (lista o numpy array): Vector de variables articulares.

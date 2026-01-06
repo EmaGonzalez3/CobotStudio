@@ -1,4 +1,4 @@
-# moveit_adapter.py
+# moveit_manager.py
 #!/usr/bin/env python3
 import time
 import threading
@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from CobotStudio import ROSManager 
 
-import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Empty, Header
 from sensor_msgs.msg import JointState
@@ -25,15 +24,14 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 from rclpy.action import ActionClient
 from control_msgs.action import GripperCommand
-from control_msgs.msg import GripperCommand as GripperCommandMsg
 from controller_manager_msgs.srv import SwitchController
 
-class MoveItAdapter(Node):
+class MoveItManager(Node):
     """
     Nodo opcional que encapsula interacciones con MoveIt/RViz:
     """
     def __init__(self,
-                 node_name: str = "moveit_adapter",
+                 node_name: str = "moveit_manager",
                  apply_scene_srv_name: str = "/apply_planning_scene",
                  update_topic: str = "/rviz/moveit/update_goal_state",
                  display_traj_topic: str = "/display_planned_path",
@@ -47,8 +45,6 @@ class MoveItAdapter(Node):
         else:
             self.project_root = Path.cwd()
         
-        # self.get_logger().info(f"MoveItAdapter Root: {self.project_root}")
-
         self.joint_names_full = joint_names
         self.apply_scene_srv_name = apply_scene_srv_name
         self.update_topic = update_topic
@@ -84,59 +80,24 @@ class MoveItAdapter(Node):
         # Lock para proteger datos y evitar condiciones de carrera
         self._lock = threading.Lock()
 
-        self.get_logger().info("MoveItAdapter inciado.")
+        self.get_logger().info("MoveItManager inciado.")
 
-    def _display_cb(self, msg: DisplayTrajectory):
-        """
-        Callback que recibe la trayectoria planeada por MoveIt.
-        """
-        with self._lock:
-            # Mantener el último mensaje de DisplayTrajectory
-            self._last_display_trajectory = msg
-
-    def _ensure_service_connection(self, client, flag_attr_name: str, timeout: float = 3.0) -> bool:
-        """
-        Helper interno: Verifica si un servicio está listo. Si no, espera 'timeout' segundos.
-        Actualiza el flag de disponibilidad automáticamente.
-        
-        Args:
-            client: El cliente ROS2 (self._apply_cli o self.plan_client).
-            flag_attr_name: Nombre del atributo flag (ej: '_apply_available').
-            timeout: Tiempo máximo de espera si no está conectado.
-        """
-        # Si el cliente devuelve que está listo el servicio, se actualiza el flag
-        if client.service_is_ready():
-            setattr(self, flag_attr_name, True)
-            return True
-
-        # Si no está listo, esperar según timeout
-        self.get_logger().info(f"Conectando a servicio '{client.srv_name}' (Esperando {timeout}s)...")
-        
-        if client.wait_for_service(timeout_sec=timeout):
-            setattr(self, flag_attr_name, True)
-            self.get_logger().info(f"Conectado a '{client.srv_name}'.")
-            return True
-        else:
-            setattr(self, flag_attr_name, False)
-            self.get_logger().error(f"Fallo conexión con '{client.srv_name}' tras {timeout}s. Asegúrese de haber ejecutado el paquete de MoveIt.")
-            return False
-
-    def apply_goal_state(self, target, tool=SE3(), wobj=SE3(), publish_tf:bool = False,  tf_frame_name: str = "moveit_robt", tf_reference: str = "moveit_wobj", timeout=10.0) -> bool:
+    def move_goal(self, target, tool=SE3(), wobj=SE3(), publish_tf:bool = False,  tf_frame_name: str = "moveit_robt", tf_reference: str = "moveit_wobj", timeout=10.0) -> bool:
         """
         Mueve el Goal State (robot naranja) de MoveIt a un vector de variables articulares o robtarget determinado.
         Llama a /apply_planning_scene para setear planning_scene.robot_state.
         Devuelve True si el servicio respondió success=True.
 
         Args:
-            target: robtarget o lista/array de variables articulares.
-            tool (SE3): Herramienta para el robtarget (por defecto identidad).
-            wobj (SE3): Workobject para el robtarget (por defecto identidad).
-            timeout (float): Tiempo máximo de espera por la respuesta del servicio.
-            publish_tf (bool): Si es True, publica la terna del goal mediante TF.
-            tf_frame_name (str): Nombre del frame TF a publicar si publish_tf es True.
+            target (RobTarget, lista, array): Destino representado por un robtarget o vector de variables articulares.
+            tool (SE3): Herramienta para el robtarget. Se asume nula por defecto (brida).
+            wobj (SE3): Workobject para el robtarget. Se asume nulo por defecto (base del robot).
+            publish_tf (bool): Si es `True`, publica la terna del goal mediante TF.
+            tf_frame_name (str): Nombre del frame TF a publicar si `publish_tf=True`.
             tf_reference (str): Frame de referencia para el TF publicado.
+            timeout (float): Tiempo máximo de espera por la respuesta del servicio.
         Returns:
-            bool: True si el servicio respondió success=True.
+            bool: True si el servicio respondió.
         """
         # Leer variables articulares o robtargets
         positions = self.ROSManager_ref._parse_to_joint_list(target, tool, wobj)
@@ -152,7 +113,7 @@ class MoveItAdapter(Node):
         elif len(positions) == 6:
             used_joints = self.joint_names_full[:6]
         else:
-            self.get_logger().error(f"apply_goal_state: longitud inválida de posiciones ({len(positions)}")
+            self.get_logger().error(f"move_goal: longitud inválida de posiciones ({len(positions)}")
             return False
         
         # Construir request
@@ -178,10 +139,10 @@ class MoveItAdapter(Node):
         if res is not None and res.success:
             self.get_logger().info("Goal State actualizado (Success).")
             
-            self.trigger_rviz_update_goal()
+            self._trigger_rviz_update_goal()
             
             if self.ROSManager_ref:
-                self.ROSManager_ref._manipulabilidad(target, wobj, tool, debug=True)
+                self.ROSManager_ref._manipulability(target, wobj, tool, debug=True)
 
             time.sleep(0.5)
 
@@ -189,7 +150,7 @@ class MoveItAdapter(Node):
             if publish_tf and getattr(self, 'ROSManager_ref', None) is not None:
                 try:
                     # SimManager maneja las ternas con TF y calcula FK con la toolbox
-                    self.ROSManager_ref.publish_goal_tf(positions, tool, wobj, tf_frame_name, tf_reference)
+                    self.ROSManager_ref._publish_goal_tf(positions, tool, wobj, tf_frame_name, tf_reference)
                 except Exception as e:
                     self.get_logger().warn(f"publish_goal_tf fallo: {e}")
             return True
@@ -197,56 +158,105 @@ class MoveItAdapter(Node):
             self.get_logger().error("No hubo respuesta de apply_planning_scene (timeout o error).")
             return False
 
-    def trigger_rviz_update_goal(self, n_publish:int = 3, delay:float = 0.2):
+    def plan_and_execute(self, target, start=None, tool=SE3(), wobj=SE3(), execute=False,
+                         update_rviz: bool = True, timeout: float = 5.0):
         """
-        Actualiza el Goal State del MotionPlanning a la posición actual (<current>) enviando un mensaje vacío. Requiere External Comm. activado en el plugin desde RViz.
+        Orquesta la planificación y ejecución de movimiento.
+
+        1. Convierte inputs (RobTargets, listas) a vectores articulares.
+        2. Llama a MoveIt (plan_joint_trajectory).
+        3. Si execute=True, construye la trayectoria y la envía al ActionServer.
+        4. Actualiza RViz.
 
         Args:
-            n_publish (int): Número de mensajes Empty a publicar.
-            delay (float): Retardo entre publicaciones en segundos.
-        """
-        e = Empty()
-        for i in range(n_publish):
-            self._pub_update.publish(e)
-            time.sleep(delay)
-
-    def last_planned_trajectory(self) -> Optional[DisplayTrajectory]:
-        """
-        Acceso al último DisplayTrajectory. Necesario para guardarla.
-        """
-        with self._lock:
-            return self._last_display_trajectory
+            target (RobTarget, lista, array): Destino representado por un robtarget o vector de variables articulares.
+            q_start (RobTarget, lista, array, optional): Inicio expresado como robtarget o vector de variables articulares. Si es None, se usa el estado actual.
+            tool (SE3): Herramienta para el robtarget. Se asume nula por defecto (brida).
+            wobj (SE3): Workobject para el robtarget. Se asume nulo por defecto (base del robot).
+            execute (bool): `True` mueve el robot en RViz. `False` planifica la trayectoria sin ejecutarla.
+            update_rviz (bool): Mover al goal state a la pose final mediante `move_goal`.
+            timeout (float): Tiempo máximo de espera por la respuesta del servicio.
         
-    def reset_last_trajectory(self):
+        Returns:
+            list: Lista de waypoints (q_list) planificados, o None si falló.
         """
-        Limpia la última trayectoria guardada. Usar antes de solicitar un nuevo plan.
-        """
+        # Convertir pose inicial y final usando el helper
+        q_goal_list = self.ROSManager_ref._parse_to_joint_list(target, tool, wobj)
+        q_start_list = None
+
+        if start is not None:
+            q_start_list = self.ROSManager_ref._parse_to_joint_list(start, tool, wobj)
+
+        if q_goal_list is None:
+            self.get_logger().error("plan_and_execute: target inválido o IK falló.")
+            return None
+        
+
+        traj_msg, q_list = self._plan_joint_trajectory(q_goal_list, q_start=q_start_list, timeout=timeout)
+        
+        if q_list is None:
+            return None
+
+        # Guardar la última trayectoria
         with self._lock:
-            self._last_display_trajectory = None
+            self.last_q_trajectory = q_list
 
-    def wait_for_planned_trajectory(self, timeout: float = 5.0) -> Optional[DisplayTrajectory]:
-        """
-        Espera hasta que llegue un DisplayTrajectory en /display_planned_path y lo retorna.
-        Args:
-            timeout (float): Tiempo máximo de espera en segundos.
-        """
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            with self._lock:
-                if self._last_display_trajectory is not None:
-                    return self._last_display_trajectory
-            time.sleep(0.05)
-        return None
+        joint_names_used, q_start_h, q_goal_h, _ = self._harmonize_joint_inputs(self.joint_names_full, q_start_list, q_goal_list)
 
-    def save_last_planned_trajectory(self, filename: str, variable_name: str = "TRAJ") -> bool:
+        if execute:
+            q_start_for_build = q_start_h
+            target_dim = len(self.joint_names_full)
+
+            if q_start_for_build is None or len(q_start_for_build) < target_dim:
+                # Obtener estado actual completo
+                curr_full = self.ROSManager_ref.get_current_q(prefer_gripper=True, timeout=0.5)
+                
+                if curr_full is not None:
+                    if q_start_for_build is None:
+                        q_start_for_build = list(curr_full)
+                    else:
+                        # Inicio del brazo + gripper actual
+                        missing_count = target_dim - len(q_start_for_build)
+                        # Si faltan datos se agrega la diferencia en las dimensiones (el gripper)
+                        gripper_vals = list(curr_full)[-missing_count:]
+                        q_start_for_build = list(q_start_for_build) + gripper_vals
+
+            jt = self._build_joint_trajectory(
+                self.joint_names_full,
+                q_list,
+                q_start=q_start_for_build,
+                )
+            
+            self.get_logger().debug(f"Trayectoria construida. Joints: {len(jt.joint_names)}, Puntos: {len(jt.points)}")
+
+            ok = self._send_trajectory_action(jt)
+            if not ok:
+                self.get_logger().warn("Fallo al ejecutar trayectoria.")
+        
+        if update_rviz:
+            try:
+                self.move_goal(q_goal_h)
+                time.sleep(1)
+            except Exception:
+                self.get_logger().warn(f"move_goal falló o no disponible.")
+            
+            try:
+                self._trigger_rviz_update_goal()
+            except Exception:
+                self.get_logger().warn("trigger_rviz_update_goal falló o no disponible.")
+                pass
+        
+        return q_list
+
+    def save_trajectory(self, filename: str, variable_name: str = "TRAJ") -> bool:
         """
         Guarda la última trayectoria planificada en la carpeta 'Trayectorias' del proyecto actual.
         
         Args:
-            filename (str): Nombre del archivo (ej: 'movimientos_llavero.py').
-            variable_name (str): Nombre de la variable python (ej: 'TRAY_PICK').
+            filename (str): Nombre del archivo.
+            variable_name (str): Nombre de la variable.
         """
-        msg = self.last_planned_trajectory()
+        msg = self._last_planned_trajectory()
         if msg is None or not msg.trajectory:
             self.get_logger().warning("No hay trayectoria planificada para guardar.")
             return False
@@ -291,13 +301,92 @@ class MoveItAdapter(Node):
         except Exception as e:
             self.get_logger().error(f"Error guardando trayectoria: {e}")
             return False
-            
-    def plan_joint_trajectory(self, q_goal, q_start=None, group_name=None, timeout=5.0):
+
+    def _display_cb(self, msg: DisplayTrajectory):
+        """
+        Callback que recibe la trayectoria planeada por MoveIt.
+        """
+        with self._lock:
+            # Mantener el último mensaje de DisplayTrajectory
+            self._last_display_trajectory = msg
+
+    def _ensure_service_connection(self, client, flag_attr_name: str, timeout: float = 3.0) -> bool:
+        """
+        Helper interno: Verifica si un servicio está listo. Si no, espera 'timeout' segundos.
+        Actualiza el flag de disponibilidad automáticamente.
+        
+        Args:
+            client: El cliente ROS2 (self._apply_cli o self.plan_client).
+            flag_attr_name: Nombre del atributo flag (ej: '_apply_available').
+            timeout: Tiempo máximo de espera si no está conectado.
+        """
+        # Si el cliente devuelve que está listo el servicio, se actualiza el flag
+        if client.service_is_ready():
+            setattr(self, flag_attr_name, True)
+            return True
+
+        # Si no está listo, esperar según timeout
+        self.get_logger().info(f"Conectando a servicio '{client.srv_name}' (Esperando {timeout}s)...")
+        
+        if client.wait_for_service(timeout_sec=timeout):
+            setattr(self, flag_attr_name, True)
+            self.get_logger().info(f"Conectado a '{client.srv_name}'.")
+            return True
+        else:
+            setattr(self, flag_attr_name, False)
+            self.get_logger().error(f"Fallo conexión con '{client.srv_name}' tras {timeout}s. Asegúrese de haber ejecutado el paquete de MoveIt.")
+            return False
+
+    def _wait_for_future(self, future, timeout_sec):
+        """Helper para esperar futuros de forma segura sin bloquear el executor de fondo."""
+        start_t = time.time()
+        while not future.done():
+            if time.time() - start_t > timeout_sec:
+                return None # Timeout
+            time.sleep(0.01)
+        
+        try:
+            return future.result()
+        except Exception as e:
+            self.get_logger().error(f"Excepción en future: {e}")
+            return None 
+
+    def _trigger_rviz_update_goal(self, n_publish:int = 3, delay:float = 0.2):
+        """
+        Actualiza el Goal State del MotionPlanning a la posición actual (<current>) enviando un mensaje vacío. Requiere External Comm. activado en el plugin desde RViz.
+
+        Args:
+            n_publish (int): Número de mensajes Empty a publicar.
+            delay (float): Retardo entre publicaciones en segundos.
+        """
+        e = Empty()
+        for i in range(n_publish):
+            self._pub_update.publish(e)
+            time.sleep(delay)
+
+    def _last_planned_trajectory(self) -> Optional[DisplayTrajectory]:
+        """
+        Acceso al último DisplayTrajectory. Necesario para guardarla.
+        """
+        with self._lock:
+            return self._last_display_trajectory
+        
+    def _reset_last_trajectory(self):
+        """
+        Limpia la última trayectoria guardada. Usar antes de solicitar un nuevo plan.
+        """
+        with self._lock:
+            self._last_display_trajectory = None
+   
+    def _plan_joint_trajectory(self, q_goal, q_start=None, group_name=None, timeout=5.0):
         """
         Planea una trayectoria con el plugin MotionPlanning de MoveIt. No la ejecuta por lo que la posición del robot no cambia.
         Devuelve (traj_msg, q_list) o (None, None) en caso de error.
         q_goal debe ser lista de len == len(joint_names) (sin gripper si el grupo no lo incluye).
         """
+        # Limpiar la memoria antes de planificar nuevamente
+        self._reset_last_trajectory()
+        
         # Verificar disponibilidad del servicio
         if not self._ensure_service_connection(self.plan_client, 'plan_available', timeout=2.0):
             return None, None
@@ -370,7 +459,7 @@ class MoveItAdapter(Node):
         return traj, q_list
    
     def _build_joint_trajectory(self, joint_names: List[str], q_list: List[List[float]],
-                            dt: float, q_start: List[float] = None, prepend_start: bool = True) -> JointTrajectory:
+                            dt: float = 0.1, q_start: List[float] = None, prepend_start: bool = True) -> JointTrajectory:
         """
         Construye un mensaje JointTrajectory a partir de una lista de waypoints.
 
@@ -589,99 +678,6 @@ class MoveItAdapter(Node):
 
         return arm_ok and gripper_ok
 
-    def plan_and_execute(self, q_goal, q_start=None, tool=SE3(), wobj=SE3(), execute=False,
-                        controller_action_name: str = '/arm_controller/follow_joint_trajectory',
-                        dt: float = 0.1, wait_for_result: bool = True,
-                        update_rviz: bool = True, timeout: float = 5.0,
-                        prepend_start_point: bool = True):
-        """
-        Orquesta la planificación y ejecución de movimiento.
-
-        1. Convierte inputs (RobTargets, listas) a vectores articulares.
-        2. Llama a MoveIt (plan_joint_trajectory).
-        3. Si execute=True, construye la trayectoria y la envía al ActionServer.
-        4. Actualiza RViz.
-
-        Args:
-            q_goal: Destino (RobTarget, lista, numpy array).
-            q_start: Inicio opcional. Si es None, se usa el estado actual.
-            execute (bool): Si True, mueve el robot real/simulado.
-            dt (float): Paso de tiempo para reconstruir la trayectoria temporal.
-        
-        Returns:
-            list: Lista de waypoints (q_list) planificados, o None si falló.
-        """
-        # Convertir pose inicial y final usando el helper
-        q_goal_list = self.ROSManager_ref._parse_to_joint_list(q_goal, tool, wobj)
-        q_start_list = None
-
-        if q_start is not None:
-            q_start_list = self._parse_to_joint_list(q_start, tool, wobj)
-
-        if q_goal_list is None:
-            self.get_logger().error("plan_and_execute: q_goal inválido o IK falló.")
-            return None
-        
-
-        traj_msg, q_list = self.plan_joint_trajectory(q_goal_list, q_start=q_start_list, timeout=timeout)
-        
-        if q_list is None:
-            return None
-
-        # Guardar la última trayectoria
-        with self._lock:
-            self.last_q_trajectory = q_list
-
-        joint_names_used, q_start_h, q_goal_h, _ = self._harmonize_joint_inputs(self.joint_names_full, q_start_list, q_goal_list)
-
-        if execute:
-            q_start_for_build = q_start_h
-            target_dim = len(self.joint_names_full)
-
-            if q_start_for_build is None or len(q_start_for_build) < target_dim:
-                # Obtener estado actual completo
-                curr_full = self.ROSManager_ref.get_current_q(prefer_gripper=True, timeout=0.5)
-                
-                if curr_full is not None:
-                    if q_start_for_build is None:
-                        q_start_for_build = list(curr_full)
-                    else:
-                        # Inicio del brazo + gripper actual
-                        missing_count = target_dim - len(q_start_for_build)
-                        # Si faltan datos se agrega la diferencia en las dimensiones (el gripper)
-                        gripper_vals = list(curr_full)[-missing_count:]
-                        q_start_for_build = list(q_start_for_build) + gripper_vals
-
-            jt = self._build_joint_trajectory(
-                self.joint_names_full,
-                q_list,
-                dt,
-                q_start=q_start_for_build,
-                prepend_start=prepend_start_point
-                )
-            
-            self.get_logger().debug(f"Trayectoria construida. Joints: {len(jt.joint_names)}, Puntos: {len(jt.points)}")
-
-            ok = self._send_trajectory_action(jt,
-                                              controller_action_name=controller_action_name, wait_for_result=wait_for_result)
-            if not ok:
-                self.get_logger().warn("Fallo al ejecutar trayectoria.")
-        
-        if update_rviz:
-            try:
-                self.apply_goal_state(q_goal_h)
-                time.sleep(1)
-            except Exception:
-                self.get_logger().warn(f"apply_goal_state falló o no disponible.")
-            
-            try:
-                self.trigger_rviz_update_goal()
-            except Exception:
-                self.get_logger().warn("trigger_rviz_update_goal falló o no disponible.")
-                pass
-        
-        return q_list
-
     def _init_collision_service(self, timeout=3.0):
         """
         Inicializa el cliente de GetStateValidity si aún no existe.
@@ -700,7 +696,7 @@ class MoveItAdapter(Node):
             self.get_logger().info("Servicio /check_state_validity disponible.")
             self._collision_available = True
 
-    def check_collision(self, positions, tool, wobj, group_name="arm", timeout=5.0):
+    def _check_collision(self, positions, tool, wobj, group_name="arm", timeout=5.0):
 
         """
         Consulta a MoveIt2 si una configuración articular está en colisión.
@@ -758,7 +754,7 @@ class MoveItAdapter(Node):
             self.get_logger().error(f"Excepción en check_collision: {e}")
             return False # Asumir colisión si falla        
     
-    def switch_controllers(self, activate_list: list = [], deactivate_list: list = [], 
+    def _switch_controllers(self, activate_list: list = [], deactivate_list: list = [], 
                            strictness: int = 1, timeout: float = 5.0) -> bool:
         """
         Activa o desactiva controladores de ros2_control dinámicamente.
@@ -870,16 +866,3 @@ class MoveItAdapter(Node):
 
         return joint_names, q_start_norm, q_goal_norm, group
               
-    def _wait_for_future(self, future, timeout_sec):
-        """Helper para esperar futuros de forma segura sin bloquear el executor de fondo."""
-        start_t = time.time()
-        while not future.done():
-            if time.time() - start_t > timeout_sec:
-                return None # Timeout
-            time.sleep(0.01)
-        
-        try:
-            return future.result()
-        except Exception as e:
-            self.get_logger().error(f"Excepción en future: {e}")
-            return None 

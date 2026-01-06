@@ -17,10 +17,18 @@ def generate_launch_description():
         name="model",
         default_value=os.path.join(
             get_package_share_path("mycobot_description"),
-            "urdf/mycobot_320_pi_2022/mycobot_320_pi_2022DH.urdf"
+            "urdf/mycobot_320_pi_2022/mycobot_320_pi_2022DH.urdf.xacro"
         )
     )
     res.append(model_launch_arg)
+
+    align_arg = DeclareLaunchArgument(
+        name="gripper_align",
+        default_value="false",
+        choices=["true", "false"],
+        description="Flag para configuración de la herramienta. Si es true, la pinza se monta alineada con la brida. Si es false, a 90 grados."
+    )
+    res.append(align_arg)
 
     rvizconfig_launch_arg = DeclareLaunchArgument(
         name="rvizconfig",
@@ -31,14 +39,33 @@ def generate_launch_description():
     )
     res.append(rvizconfig_launch_arg)
 
-    gui_launch_arg = DeclareLaunchArgument(
-        name="gui",
-        default_value="true"
-    )
-    res.append(gui_launch_arg)
+    # gui_launch_arg = DeclareLaunchArgument(
+    #     name="gui",
+    #     default_value="true"
+    # )
+    # res.append(gui_launch_arg)
 
-    robot_description = ParameterValue(Command(['xacro ', LaunchConfiguration('model')]),
-                                       value_type=str)
+    # robot_description = ParameterValue(Command(['xacro ', LaunchConfiguration('model')]),
+    #                                    value_type=str)
+
+    robot_description_content = Command([
+        'xacro ', LaunchConfiguration('model'),
+        ' gripper_align:=', LaunchConfiguration('gripper_align')
+    ])
+    
+    robot_description = ParameterValue(robot_description_content, value_type=str)
+
+    joint_state_publisher_node = Node(
+        package='joint_state_publisher',
+        executable='joint_state_publisher',
+        name='joint_state_publisher',
+        parameters=[{
+            'robot_description': robot_description,
+            'source_list': ['/joint_commands']
+        }]
+    )
+
+    res.append(joint_state_publisher_node)
 
     robot_state_publisher_node = Node(
         package='robot_state_publisher',
@@ -47,22 +74,15 @@ def generate_launch_description():
     )
     res.append(robot_state_publisher_node)
 
-    joint_state_publisher_node = Node(
-        package='joint_state_publisher',
-        executable='joint_state_publisher',
-        condition=UnlessCondition(LaunchConfiguration('gui'))
-    )
-    res.append(joint_state_publisher_node)
 
+    # Joint_state_publisher con sliders interactivos
+    # joint_state_publisher_gui_node = Node(
+    #     package='joint_state_publisher_gui',
+    #     executable='joint_state_publisher_gui',
+    #     condition=IfCondition(LaunchConfiguration('gui'))
+    # )
+    # res.append(joint_state_publisher_gui_node)
 
-    """
-    joint_state_publisher_gui_node = Node(
-        package='joint_state_publisher_gui',
-        executable='joint_state_publisher_gui',
-        condition=IfCondition(LaunchConfiguration('gui'))
-    )
-    res.append(joint_state_publisher_gui_node)
-    """
 
     rviz_node = Node(
         name="rviz2",
@@ -72,14 +92,5 @@ def generate_launch_description():
         arguments=['-d', LaunchConfiguration("rvizconfig")],
     )
     res.append(rviz_node)
-
-    ini_node = Node(
-    name='initial_joint_state_publisher',
-    package='mycobot_320',
-    executable='initial_joint_state_publisher',
-    output='screen'
-    )
-
-    res.append(ini_node)        
 
     return LaunchDescription(res)

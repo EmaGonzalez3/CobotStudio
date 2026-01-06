@@ -102,45 +102,6 @@ class MarkerManager(Node):
         self.last_stamp = msg.header.stamp
         self._handle_auto_attach(msg)
 
-    def _handle_auto_attach(self, msg: JointState):
-        """
-        Lógica para agarrar/soltar objetos.
-        Detecta cambios en la posición de la pinza para inferir comandos de abrir/cerrar.
-        """
-        try:
-            # Encontrar el estado actual de la pinza
-            current_gripper_state = msg.position[6]
-
-            if self.prev_gripper_state is not None:
-
-                delta = current_gripper_state - self.prev_gripper_state
-                # Detectar cierre: el valor del joint disminuye
-                if delta < self.GRIPPER_CLOSE_DELTA:
-                    # Buscar objeto más cercano
-                    closest_obj, min_dist = self.find_closest_object()
-
-                    # Si la distancia es menor al valor umbral, se toma dicho objeto
-                    if closest_obj and min_dist < self.attach_distance_threshold:
-                        self.get_logger().info(f"Cierre de pinza detectado. Objeto más cercano: {closest_obj} a {min_dist:.3f}m.")
-                        self.attach(closest_obj)
-
-                # Detectar apertura: el valor del joint aumenta
-                elif delta > self.GRIPPER_OPEN_DELTA:
-                    # Buscar si hay un objeto adherido para soltarlo
-                    for obj in self.objects.values():
-                        if obj.attached:
-                            self.get_logger().info(f"Apertura de pinza detectada. Soltando {obj.name}.")
-                            self.detach(obj.name)
-                            break # Se asume que solo se puede tener un objeto a la vez
-
-            self.prev_gripper_state = current_gripper_state
-
-        except (ValueError, IndexError):
-            # Si el joint de la pinza no está en el mensaje, se ignora
-            pass
-        except Exception as e:
-            self.get_logger().error(f"Error en _handle_auto_attach: {e}")
-
     def find_closest_object(self):
         """
         Encuentra el objeto móvil más cercano más cercano al TCP del robot.
@@ -321,7 +282,46 @@ class MarkerManager(Node):
         # Limpiar la memoria interna del script
         self.objects.clear()
         self._next_id = 0
+    
+    def _handle_auto_attach(self, msg: JointState):
+        """
+        Lógica para agarrar/soltar objetos.
+        Detecta cambios en la posición de la pinza para inferir comandos de abrir/cerrar.
+        """
+        try:
+            # Encontrar el estado actual de la pinza
+            current_gripper_state = msg.position[6]
 
+            if self.prev_gripper_state is not None:
+
+                delta = current_gripper_state - self.prev_gripper_state
+                # Detectar cierre: el valor del joint disminuye
+                if delta < self.GRIPPER_CLOSE_DELTA:
+                    # Buscar objeto más cercano
+                    closest_obj, min_dist = self.find_closest_object()
+
+                    # Si la distancia es menor al valor umbral, se toma dicho objeto
+                    if closest_obj and min_dist < self.attach_distance_threshold:
+                        self.get_logger().info(f"Cierre de pinza detectado. Objeto más cercano: {closest_obj} a {min_dist:.3f}m.")
+                        self.attach(closest_obj)
+
+                # Detectar apertura: el valor del joint aumenta
+                elif delta > self.GRIPPER_OPEN_DELTA:
+                    # Buscar si hay un objeto adherido para soltarlo
+                    for obj in self.objects.values():
+                        if obj.attached:
+                            self.get_logger().info(f"Apertura de pinza detectada. Soltando {obj.name}.")
+                            self.detach(obj.name)
+                            break # Se asume que solo se puede tener un objeto a la vez
+
+            self.prev_gripper_state = current_gripper_state
+
+        except (ValueError, IndexError):
+            # Si el joint de la pinza no está en el mensaje, se ignora
+            pass
+        except Exception as e:
+            self.get_logger().error(f"Error en _handle_auto_attach: {e}")
+    
     def _update_markers(self):
         """
         Actualiza la posición de todos los objetos según corresponda.
