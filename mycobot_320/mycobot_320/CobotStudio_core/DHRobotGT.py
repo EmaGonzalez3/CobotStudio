@@ -630,7 +630,7 @@ class myCobot320(DHRobotGT):
 
         return p_tool, p_tool_real, residuals, ecm, rmse
 
-    def teach_wobj(self, q_poses_deg, tool: SE3, z_aux = 25):
+    def calc_wobj(self, q_poses_deg, tool: SE3, z_aux = 25):
         """
         Calcula un workobject a partir de una lista de vectores de variables articulares.
         Permite métodos de cálculo enseñando 3 o 6 puntos.

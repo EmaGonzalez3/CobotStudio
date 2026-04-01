@@ -3,7 +3,7 @@ import threading
 import time
 import json
 
-class RobotServer:
+class CobotServer:
     """
     Server que publica por TCP la última lectura de ángulos del robot en tiempo real.
 
@@ -56,13 +56,13 @@ class RobotServer:
 
     def wait_for_connection(self, timeout=None):
         """Bloquea la ejecución hasta que un cliente de ROS se conecte. Evita un inicio prematuro de la rutina."""
-        print(f"[RobotServer] Esperando conexión de cliente ROS2 en {self.host}:{self.port}...")
+        print(f"[CobotServer] Esperando conexión de cliente ROS2 en {self.host}:{self.port}...")
         connected = self._client_connected.wait(timeout=timeout)
 
         if connected:
-            print("[RobotServer] ¡Cliente conectado! Iniciando secuencia...")
+            print("[CobotServer] ¡Cliente conectado! Iniciando secuencia...")
         else:
-            print("[RobotServer] Timeout esperando cliente (o se continuó sin espera).")
+            print("[CobotServer] Timeout esperando cliente (o se continuó sin espera).")
         return connected
     
     def set_gripper_state(self, value: float):
@@ -92,14 +92,14 @@ class RobotServer:
                         self._latest["gripper"] = self._gripper_val
 
             except Exception as e:
-                print(f"[RobotServer] error leyendo ángulos: {e}")
+                print(f"[CobotServer] error leyendo ángulos: {e}")
             
             time.sleep(poll_interval)
 
     def _handle_client(self, conn, addr):
         """Envía el estado actual al cliente conectado en formato JSON Lines."""
 
-        print(f"[RobotServer] cliente conectado {addr}")
+        print(f"[CobotServer] cliente conectado {addr}")
         self._client_connected.set()
 
         period = 1.0 / self.send_rate_hz
@@ -127,10 +127,10 @@ class RobotServer:
                         message = json.dumps(payload, allow_nan=False).encode('utf-8') + b'\n'
                         conn.sendall(message)
                     except (BrokenPipeError, ConnectionResetError):
-                        print(f"[RobotServer] Cliente {addr} desconectado.")
+                        print(f"[CobotServer] Cliente {addr} desconectado.")
                         break
                     except Exception as e:
-                        print(f"[RobotServer] Error de transmisión: {e}")
+                        print(f"[CobotServer] Error de transmisión: {e}")
                         break
                 
                 # Mantener frecuencia constante
@@ -156,10 +156,10 @@ class RobotServer:
                 s.listen(1)
                 s.settimeout(1.0)
             except Exception as e:
-                print(f"[RobotServer] Error fatal al iniciar socket: {e}")
+                print(f"[CobotServer] Error fatal al iniciar socket: {e}")
                 return
 
-            print(f"[RobotServer] escuchando en {self.host}:{self.port}")
+            print(f"[CobotServer] escuchando en {self.host}:{self.port}")
 
             while not self._shutdown.is_set():
                 try:

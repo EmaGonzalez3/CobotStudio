@@ -6,13 +6,12 @@ import datetime
 import threading
 import logging
 from pymycobot import MyCobotSocket, MyCobot320
-from scipy.spatial.transform import Rotation as R
 from abc import ABC, abstractmethod
 from spatialmath import SE3
 from pynput import keyboard
 from pathlib import Path
 import importlib.util
-from common_robt import RobTarget
+from RobtManager import RobTarget
 from typing import TYPE_CHECKING
 
 # Typehinting: no se ejecuta en runtime, solo ofrece autocompletado.
@@ -281,7 +280,7 @@ class BaseRobotController(ABC):
         
         # Calcular el workobject
         print(f"\n[Calculando] Procesando geometría ({method})...")
-        wobj_calculated = self.cobot_tb.teach_wobj(q_vals, tool, method=method)
+        wobj_calculated = self.cobot_tb.calc_wobj(q_vals, tool)
         print(f"[Resultado] Wobj:\n{wobj_calculated}")
         
         # Delegar guardado
@@ -644,17 +643,23 @@ class BaseRobotController(ABC):
                     # Escribir encabezado con imports solo si es archivo nuevo
                     if mode == 'w':
                         f.write(f"# Archivo de definiciones: {folder}\n")
-                        f.write("from spatialmath import SE3\n")
+                        f.write("from spatialmath import SE3, UnitQuaternion\n")
                         f.write("import numpy as np\n\n")
+
+                    # Extraemos el cuaternión desde la matriz de rotación del SE3.
+                    # .vec nos devuelve un array de 4 elementos: [s, vx, vy, vz]
+                    print(f'DEBUG se3_obj: {se3_obj.R}')
+                    quat = SE3.UnitQuaternion(se3_obj).vec
+                    print(f'DEBUG quat: {quat}')
                     
                     # Formateo de alta precisión para facilitar la reconstrucción del objeto
-                    R_str = "[\n" + ",\n".join(["    [" + ", ".join([f"{val:.18e}" for val in row]) + "]" for row in se3_obj.R]) + "\n  ]"
-                    t_str = "[" + ", ".join([f"{val:.18e}" for val in se3_obj.t.flatten()]) + "]"
+                    q_str = "[" + ", ".join([f"{val:.6e}" for val in quat]) + "]"
+                    t_str = "[" + ", ".join([f"{val:.6e}" for val in se3_obj.t.flatten()]) + "]"
                     
                     f.write(f"# Guardado: {datetime.datetime.now().isoformat()}\n") # Marca de tiempo
-                    f.write(f"{var_name}_R = np.array({R_str})\n")                  # Escritura de la matriz de rotación
+                    f.write(f"{var_name}_q = {q_str}\n")                  # Escritura de la matriz de rotación
                     f.write(f"{var_name}_t = np.array({t_str})\n")                  # Escritura del vector traslación
-                    f.write(f"{var_name} = SE3.Rt({var_name}_R, {var_name}_t)\n\n") # Variable que reconstruye el objeto
+                    f.write(f"{var_name} = SE3({var_name}_t) * UnitQuaternion({var_name}_q).SE3()\n\n")
                 self.logger.info(f"[Guardado] {folder}/{var_name} -> {path_se3.name}")
             except Exception as e:
                 self.logger.error(f"[Error] Falló guardado SE3: {e}")

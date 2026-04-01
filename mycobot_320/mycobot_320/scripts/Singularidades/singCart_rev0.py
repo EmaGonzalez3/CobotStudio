@@ -30,20 +30,9 @@ def run(robot:BaseRobotController, **kwargs):
     [  0,   0,  0,   1    ]
     ])
 
-    TA_muñeca=SE3([
-        [ 0.07 , -0.   ,  0.998,  114.12],
-        [ 0.641, -0.766, -0.045,  127.59],
-        [ 0.764,  0.643, -0.053,  296.19],
-        [ 0.   ,  0.   ,  0.   ,  1.   ]
-        ])
-    
-    TB_muñeca=SE3([
-        [ 0.07 , -0.   ,  0.998,  194.12],
-        [ 0.641, -0.766, -0.045,  127.59],
-        [ 0.764,  0.643, -0.053,  296.19],
-        [ 0.   ,  0.   ,  0.   ,  1.    ]
-        ])
-    
+    TA_muñeca=robot.load_data('Poses', 'SingMuñeca', 'PuntoA')
+    TB_muñeca=robot.load_data('Poses', 'SingMuñeca', 'PuntoB')
+
     def traj_sing(robot:BaseRobotController, spd, pose1, pose2, config):
             robt1 = RobTarget(pose1, config=config)
             robt2 = RobTarget(pose2, config=config)

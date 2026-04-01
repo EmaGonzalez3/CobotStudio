@@ -42,8 +42,7 @@ def menu_interactivo_cebado(funcion_movimiento, wobj = SE3()):
             print("(!) Opción inválida.")
             continue
 
-        # Llamamos a la función que nos pasaron.
-        # No hace falta saber qué robot es ni qué wobj usa.
+        # Llamar a la función que ejecuta los movimientos
         try:
             funcion_movimiento(opcion, wobj)
         except Exception as e:
@@ -56,93 +55,41 @@ def run(robot: BaseRobotController, **kwargs):
     # TCP
     pinza = SE3(-1.71381642, 106.90735789, 28.32702833) * SE3.Rx(-np.pi/2) * SE3.Rz(np.pi)
 
-
+    # Robtargets termo
     tomar_termo = RobTarget(SE3(338, -65, 344)*SE3.RPY([89, 0, 59.38], unit='deg'), [1, 1, -1])
     tomar_termo_wobj = RobTarget(SE3(60.5, 178.71, -167)*SE3.RPY([-1.59, 1.22e-16, -1.56]), [1, 1, -1])
-    # tomar_termo_wobjmate = RobTarget(SE3(342.06, 48.46+65, -182)*SE3.RPY([-1.59, -1.32e-18, 1.08e-2]), [1, 1, -1])
     tomar_termo_wobjmate = RobTarget(SE3(342.06, 48.46+65, -182)*SE3.Rx(-np.pi/2), [1, 1, -1])
 
+    # Robtargets cebado
     cebar = RobTarget(SE3(273, -185, 307)*SE3.RPY([83, -2, -12], unit='deg'), [1, 1, -1])
     cebar_wobj = RobTarget(SE3(64.17, 315.3, -130)*SE3.RPY([-1.69, 0.035, -0.314]), [1, 1, -1])
     cebar_wobjmate = RobTarget(SE3(205.63, 52.17, -145)*SE3.RPY([-1.69, 0.035, 1.25]), [1, 1, -1])
 
-
+    # TCP en el pico de la botella
     pico = SE3(-18, 132.5, 7)*SE3.Rx(-np.pi/2)*SE3.Rz(-np.pi/2)
     pinza_pico = pinza*pico
-    mesa = SE3(375, 120, 177)*SE3.Rz(np.deg2rad(-30))*SE3.Rx(np.pi)
+
+    # Workobject
     mesa_mate = SE3(125, -337, 162)*SE3.Rz(np.deg2rad(60))*SE3.Rx(np.pi)
-
-
+    mesa_mate_quat = SE3(125, -337, 162)*UnitQuaternion([0.0, 0.8660, 0.5000, 0.0]).SE3()   # Wobj como cuaternión
 
     def moveit(robot:ROSManager):
-       
-        
-        robot.moveit_adapter.apply_goal_state(cebar.relTool(0,15,20,-5), pinza_pico, publish_tf=True)
-        
-        # robot.explore_ik_configs(cebar.relTool(0,-10,0,10), pinza_pico, filtrar=False)
-        # robot.moveit_adapter.apply_goal_state(tomar_termo.relTool(0, 30, 0), pinza, publish_tf=True)
+        # Pose de pick del termo
+        robot.moveit_manager.move_goal(tomar_termo.relTool(0, 30, 0), pinza, publish_tf=True)
 
-        # robot.moveit_adapter.apply_goal_state(cebar.relTool(0,30,0,-10), pinza_pico, publish_tf=True)
-        # robot.moveit_adapter.apply_goal_state(cebar.relTool(0,10,0,-5), pinza_pico, publish_tf=True)
-        # robot.moveit_adapter.apply_goal_state(cebar.relTool(0,0,0,0), pinza_pico, publish_tf=True)
-        # robot.moveit_adapter.apply_goal_state(cebar.relTool(0,-10,0,5), pinza_pico, publish_tf=True)
-        # robot.moveit_adapter.apply_goal_state(cebar.relTool(0,-10,0,10), pinza_pico, publish_tf=True)
-        # robot.moveit_adapter.apply_goal_state(cebar.relTool(0,-10,0,20), pinza_pico, publish_tf=True)
-        # robot.moveit_adapter.apply_goal_state(cebar.relTool(0,-15,0,25), pinza_pico, publish_tf=True)
+        # Test de poses para cebar
+        robot.check_pose_configs(cebar.relTool(0,-10,0,10), pinza_pico, filtrar=False)
+        robot.moveit_manager.move_goal(cebar.relTool(0,30,0,-10), pinza_pico, publish_tf=True)
+        robot.moveit_manager.move_goal(cebar.relTool(0,10,0,-5), pinza_pico, publish_tf=True)
+        robot.moveit_manager.move_goal(cebar.relTool(0,0,0,0), pinza_pico, publish_tf=True)
+        robot.moveit_manager.move_goal(cebar.relTool(0,-10,0,5), pinza_pico, publish_tf=True)
+        robot.moveit_manager.move_goal(cebar.relTool(0,-10,0,10), pinza_pico, publish_tf=True)
+        robot.moveit_manager.move_goal(cebar.relTool(0,-10,0,20), pinza_pico, publish_tf=True)
+        robot.moveit_manager.move_goal(cebar.relTool(0,-15,0,25), pinza_pico, publish_tf=True)
 
-
-        # robot.moveit_adapter.plan_and_execute(cebar, tool=pinza_pico, execute=True)
-        # robot.moveit_adapter.plan_and_execute(tomar_termo.relTool(0, 0, 65, -7), tool=pinza, execute=True)
-        # robot.moveit_adapter.plan_and_execute(cebar_pico3.relTool(0, 30, 0), cebar_pico3.relTool(0,110,0,-35), tool=pinza_pico, execute=False)
-        # robot.moveit_adapter.plan_and_execute(cebar_pico3.relTool(0,20,0,-15), cebar_pico3.relTool(0,110,0,-35), tool=pinza_pico, execute=False)
-        # robot.moveit_adapter.plan_and_execute(cebar_pico3.relTool(0,30,0,0), cebar_pico3.relTool(0,20,0,-15), tool=pinza_pico, execute=False)
-        # robot.moveit_adapter.plan_and_execute(cebar_pico.relTool(0,0,0,0), tool=pinza_pico, execute=True)
-        # robot.moveit_adapter.plan_and_execute(tomar_termo31.relTool(0, 0, 50), tool=pinza, execute=True)
-
-
-        # print(RobTarget.from_q(robot.get_current_q(), pinza_pico))
-        # robot.MostrarTerna(RobTarget.from_q(robot.get_current_q(), SE3()).pose*pinza_pico, 'pico')
-        # robot.MostrarTerna(terna_pinza*pico, 'pico')
-        # robot.moveit_adapter.apply_goal_state(tomar_termo, pinza, publish_tf=True)
-        # robot.MostrarTerna(cebar_max2.offset(0, 0, 10).pose*pico, 'pico_cebando')
-
-    def movs(wobj = SE3()):
-
-        robot.GripperState(100, 30)
-        # Acercarse al termo
-        robot.MoveJ(tomar_termo.relTool(0, 0, -20, -7), 30, pinza, wobj)
-        # Tomar termo
-        robot.MoveJ(tomar_termo.relTool(0, 0, 65, -7), 30, pinza, wobj)
-        time.sleep(1)
-        robot.GripperState(20, 30)
-        time.sleep(2)
-
-        # Levantar termo
-        robot.MoveJ(tomar_termo.relTool(0, 30, 65, -7), 30, pinza, wobj)
-
-        # Pre cebado
-        robot.MoveJ(cebar.relTool(0,30,0,-10), 30, pinza_pico, wobj)
-
-        # Cebar
-        robot.MoveJ(cebar.relTool(0,-10,0,5), 10, pinza_pico, wobj)
-        robot.MoveJ(cebar.relTool(0,-10,0,20), 10, pinza_pico, wobj)
-        robot.MoveJ(cebar.relTool(0,-15,0,25), 10, pinza_pico, wobj)
-        time.sleep(1)
-        robot.MoveJ(cebar.relTool(0,-10,0,10), 10, pinza_pico, wobj)
-        robot.MoveJ(cebar.relTool(0,15,20,-5), 10, pinza_pico, wobj)
-        # robot.MoveJ(cebar.relTool(0,0,0,-10), 30, pinza_pico)
-
-        # time.sleep(1)
-        
-        # Devolver termo
-        robot.MoveJ(tomar_termo.relTool(0, 30, 65, -7), 30, pinza, wobj)
-        robot.MoveJ(tomar_termo.relTool(0, 0, 65, -7), 10, pinza, wobj)
-        time.sleep(1)
-        robot.GripperState(100, 30)
-        time.sleep(2)
-
-        robot.MoveJ(tomar_termo.relTool(0, 0, -20, -7), 30, pinza, wobj)
-
+        print(RobTarget.from_q(robot.get_current_q(), pinza_pico))
+        robot.show_tf(RobTarget.from_q(robot.get_current_q(), SE3()).pose*pinza_pico, 'pico')
+        robot.moveit_manager.move_goal(tomar_termo, pinza, publish_tf=True)
 
     def acercarse_termo(wobj = mesa_mate):
         robot.GripperState(100, 30)
@@ -175,10 +122,7 @@ def run(robot: BaseRobotController, **kwargs):
         time.sleep(1)
         robot.MoveJ(cebar_wobjmate.relTool(0,-10,0,10), 20, pinza_pico, wobj)
         robot.MoveJ(cebar_wobjmate.relTool(0,15,20,-5), 20, pinza_pico, wobj)
-        # robot.MoveJ(cebar_wobjmate.relTool(0,0,0,-10), 30, pinza_pico)
-
-        # time.sleep(1)
-        
+       
         # Devolver termo
         robot.MoveJ(tomar_termo_wobjmate.relTool(0, 30, 0, -7), 30, pinza, wobj)
         robot.MoveJ(tomar_termo_wobjmate.relTool(0, 0, 0, -7), 10, pinza, wobj)
@@ -192,31 +136,7 @@ def run(robot: BaseRobotController, **kwargs):
         robot.MoveJ(tomar_termo_wobjmate.relTool(0, 0, -85, -7), 30, pinza, wobj)
         robot.GoHome(30)
 
-    def tests():
-        # moveit(robot)
-        # movs()
-        # robot.MostrarTerna(mesa, 'esquina')
-        robot.MostrarTerna(mesa_mate, 'mesa_mate')
-        
-        # robot.MostrarTerna(SE3(375, 120, 177)*SE3.Rz(np.deg2rad(-30))*SE3.Rx(np.pi), 'esquina')
-        robot.MostrarTerna(tomar_termo.pose, 'tomar_og')
-        robot.MostrarTerna(tomar_termo_wobjmate.pose, 'tomar_wobj', mesa_mate)
-        robot.MostrarTerna(cebar.pose, 'cebar_og')
-        robot.MostrarTerna(cebar_wobjmate.pose, 'cebar_wobj', mesa_mate)
-        time.sleep(2)
-        # print((mesa.inv()*tomar_termo.pose).rpy())
-        # print((mesa.inv()*cebar.pose).rpy())
-        print((mesa_mate.inv()*cebar.pose).t)
-        print((mesa_mate.inv()*cebar.pose).rpy())
-        # robot.MoveJ(cebar_wobj.relTool(0,-10,0,5), 10, pinza_pico, mesa)
-
-    wobj_actual = mesa_mate
-    # acercarse_termo(wobj_actual)
-    # menu_interactivo_cebado(cebar_mate_wobj, wobj_actual)
-    # finalizar(wobj_actual)
-    # tests()
-    # wobj_teach = robot.load_wobj("mesa", "base_sinaux", pinza)
-    moveit(robot)
-    time.sleep(2)
-
+    acercarse_termo(mesa_mate)
+    menu_interactivo_cebado(cebar_mate_wobj, mesa_mate)
+    finalizar(mesa_mate)
     

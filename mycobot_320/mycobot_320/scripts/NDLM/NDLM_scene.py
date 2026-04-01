@@ -8,18 +8,8 @@ def setup_scene(robot_manager: ROSManager):
         robot_manager: La instancia de SimManager a la que se agregarán los objetos.
         """
         print("--- Configurando la escena de trabajo en RViz ---")
-        altura_base = 0.025 # Base de aluminio del cobot
-        altura_mesa = 0.09 # Altura de los bloques de madera a apilar
         brida_base = 0.0
-        rotz_piezas = -np.pi/6.6 # np.pi/7.5 en rev_0
-
-        # Agregamos los objetos según sus dimensiones
-        # robot_manager.add_scene_object("robot_base", pose_init=(63.5e-3, 5.0e-3, -altura_base/2 - brida_base), #60.0e-3, 5.0e-3
-        #                 size=(1.0e-3, 1.0e-3, 1.0e-3),
-        #                 color=(1.0, 1.0, 1.0, 1.0),
-        #                 shape=Shapes.MESH, movable=False, 
-        #                 mesh="file:///home/ema/colcon_ws/src/mycobot_ros2/mycobot_320/mycobot_320/scripts/NDLM/Base_Cobot.STL",
-        #                 rot_euler=(-np.pi/2, 0, np.pi*+1.012)) # -1.005
+        rotz_piezas = -np.pi/6.6 
 
         robot_manager.add_scene_object(name="listón",
         pose_init=(273.0e-3, -125.0e-3,- brida_base),

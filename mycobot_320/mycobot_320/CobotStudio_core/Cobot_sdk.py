@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import time
 from spatialmath import SE3, UnitQuaternion
-from common_robt import RobTarget
+from RobtManager import RobTarget
 from typing import TYPE_CHECKING
 from CobotStudio import BaseRobotController
 

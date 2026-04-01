@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""
-TCPJointStateClient
------------------------------
-Nodo de ROS 2 que actúa como cliente TCP.
-Se conecta al RobotServer (corriendo en la Raspberry Pi del cobot),
-recibe la telemetría en tiempo real (JSON) y publica en el tópico /joint_states.
-
-Permite visualizar el movimiento del robot real en RViz al ejecutar una rutina.
-"""
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
@@ -32,7 +23,14 @@ JOINT_NAMES = [
     'gripper_controller'
 ]
 
-class TCPJointStateClient(Node):
+class CobotClient(Node):
+    """
+    Nodo de ROS 2 que actúa como cliente TCP.
+    Se conecta al RobotServer (corriendo en la Raspberry Pi del cobot),
+    recibe la telemetría en tiempo real (JSON) y publica en el tópico /joint_states.
+
+    Permite visualizar el movimiento del robot real en RViz al ejecutar una rutina.
+    """
     def __init__(self):
         super().__init__('tcp_joint_state_client')
 
@@ -168,7 +166,7 @@ class TCPJointStateClient(Node):
 
 def main():
     rclpy.init()
-    node = TCPJointStateClient()
+    node = CobotClient()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

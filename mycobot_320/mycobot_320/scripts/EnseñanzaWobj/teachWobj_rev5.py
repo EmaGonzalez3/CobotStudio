@@ -59,7 +59,7 @@ def run(robot: BaseRobotController, **kwargs):
 
                 if choice == '1':
                     print("\n[Opción 1] Moviendo el robot a la posición Home...")
-                    robot.MoveJAngles(np.zeros(6), 30) # Mover a Home
+                    robot.MoveJ_q(np.zeros(6), 30) # Mover a Home
                     
                     print("Llegó a Home. Esperando 3 segundos...")
                     time.sleep(3)
@@ -121,7 +121,7 @@ def run(robot: BaseRobotController, **kwargs):
 
                 if choice == '3':
                     print("\n[Opción 3] Enviando a home y finalizando...")
-                    robot.MoveJAngles(np.zeros(6), 30) # Mover a Home
+                    robot.MoveJ_q(np.zeros(6), 30) # Mover a Home
                     
                     print("Llegó a Home. Terminando prueba...")
                     return
@@ -230,8 +230,8 @@ def run(robot: BaseRobotController, **kwargs):
 
     def registrar_datos(q_list):
         for i in range (6):
-            robot.MoveJAngles(np.zeros(6), 40, 'deg')
-            robot.MoveJAngles(np.array(q_list[i]), 30, 'deg')
+            robot.MoveJ_q(np.zeros(6), 40, 'deg')
+            robot.MoveJ_q(np.array(q_list[i]), 30, 'deg')
             time.sleep(5)
             print(f'Ángulos pedidos\n{q_list[i]}')
             print(f'Cobot coords\n{robot.mc.get_angles()}')
@@ -240,7 +240,7 @@ def run(robot: BaseRobotController, **kwargs):
 
     def calibrar_servos():
         """Calibrar los servos del cobot real en su posición home."""
-        robot.MoveJAngles(np.zeros(6), 20, 'deg') # Enviamos al cobot al home
+        robot.MoveJ_q(np.zeros(6), 20, 'deg') # Enviamos al cobot al home
         time.sleep(2)
         print(f'Lectura de los encoders:\n{robot.mc.get_encoders()}') # Vemos qué dicen los encoders
         for i in range (6):
@@ -302,17 +302,17 @@ def run(robot: BaseRobotController, **kwargs):
         return wobj_teach, q_wobj
 
     def cheq_wobj_qs(robot: ROSManager, it_wobj, archivo, version_archivo):
-        robot.VerPose(np.zeros(6), pinza)
+        robot.view_pose(np.zeros(6), pinza)
         robot.GripperState(0)
         q_load = robot.load_data('Workobjects', f'{archivo}v{version_archivo}', f'q_{it_wobj}')
         q_rads = np.deg2rad(q_load)
         for idx, q in enumerate(q_rads, start=1):
             if idx <= 3:
-                robot.MostrarTerna(robot.cobot_tb.fkine(q) * pinza, f'x{idx}')
+                robot.show_tf(robot.cobot_tb.fkine(q) * pinza, f'x{idx}')
             else:
-                robot.MostrarTerna(robot.cobot_tb.fkine(q) * pinza, f'y{idx-3}')
+                robot.show_tf(robot.cobot_tb.fkine(q) * pinza, f'y{idx-3}')
             time.sleep(1)
-            robot.VerPose(q, pinza_aux)
+            robot.view_pose(q, pinza_aux)
             time.sleep(1)
     
     def send_wobj_to_cobot(robot, wobj):
@@ -330,22 +330,22 @@ def run(robot: BaseRobotController, **kwargs):
 
 """
 Notas:
-cob.MoveJAngles(np.array([135, 25, 30, 20, -30, 0]), 30, 'deg')
+cob.MoveJ_q(np.array([135, 25, 30, 20, -30, 0]), 30, 'deg')
 
 wobj15 
 Offset en [x, y, z]: [-9.199  1.534 28.009] mm
 Si lo hago llegar desde donde quedó ajustado el offset cambia: Offset en [x, y, z]: [ 0.79  -3.483 21.856] mm
-Desde MoveJAngles: Offset en [x, y, z]: [-9.911  0.588 29.286] mm
+Desde MoveJ_q: Offset en [x, y, z]: [-9.911  0.588 29.286] mm
 
 wobj16
 Llegando a lo calculado desde 0: Offset en [x, y, z]: [-15.023  -2.646  27.512] mm
 Llegando desde la esquina: Offset en [x, y, z]: [-1.48  -6.651 24.885] mm
-Desde MoveJAngles: Offset en [x, y, z]: [-8.325  2.395 23.981] mm
+Desde MoveJ_q: Offset en [x, y, z]: [-8.325  2.395 23.981] mm
 
 wobj17
 Desde 0: Offset en [x, y, z]: [12.354  4.259 29.53 ] mm
 Desde la esquina: Offset en [x, y, z]: [12.48  -2.029 24.586] mm
-Desde el MoveJAngles: Offset en [x, y, z]: [12.126 15.975 32.041] mm
+Desde el MoveJ_q: Offset en [x, y, z]: [12.126 15.975 32.041] mm
 
 """
 

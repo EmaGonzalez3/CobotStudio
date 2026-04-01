@@ -2,7 +2,7 @@ from __future__ import annotations
 from spatialmath import SE3
 import numpy as np
 import time
-from common_robt import RobTarget
+from RobtManager import RobTarget
 from CobotStudio import BaseRobotController
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:

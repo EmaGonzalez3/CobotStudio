@@ -34,7 +34,7 @@ if str(CORE_DIR) not in sys.path:
 try:
     # Importaciones del núcleo del proyecto
     from CobotStudio import MyCobotController, ROS_OK
-    from robot_server import RobotServer
+    from CobotServer import CobotServer
     if ROS_OK:
          from CobotStudio import ROSManager
     else:
@@ -54,7 +54,7 @@ def get_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("filepath", type=str, help="Ruta al archivo .py de la rutina (ej: Proyecto/Rutina.py)")
     parser.add_argument("mode", choices=["ros", "real"], help="Modo de ejecución: Robot Virtual (ROS) o Hardware (Real)")
-    parser.add_argument("--bridge", action="store_true", help="Activar RobotServer para streaming de datos (solo en mode real)")
+    parser.add_argument("--bridge", action="store_true", help="Activar CobotServer para streaming de datos (solo en mode real)")
     parser.add_argument("--speed", type=int, default=30, help="Velocidad global de ejecución (1-100)")
     return parser
 
@@ -134,7 +134,7 @@ def initialize_environment(mode: str, project_path: Path, enable_bridge: bool):
         
         if enable_bridge:
             print("[Bridge] Configurando servidor de transmisión de datos...")
-            server = RobotServer(
+            server = CobotServer(
                 read_angles_callable=lambda: _get_angles_safe(robot),
                 port=65432
             )
@@ -203,7 +203,7 @@ def main():
     finally:
         # Limpieza y apagado
         if server:
-            print("    - Deteniendo RobotServer...")
+            print("    - Deteniendo CobotServer...")
             server.stop()
         
         if robot and hasattr(robot, 'shutdown'):

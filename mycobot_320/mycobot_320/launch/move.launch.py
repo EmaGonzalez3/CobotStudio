@@ -61,7 +61,7 @@ def generate_launch_description():
         name='joint_state_publisher',
         parameters=[{
             'robot_description': robot_description,
-            'source_list': ['/joint_commands']
+            'source_list': ['/joint_states']
         }]
     )
 
