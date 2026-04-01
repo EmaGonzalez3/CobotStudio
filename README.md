@@ -171,7 +171,7 @@ mesa = SE3(125, -337, 162)*SE3.Rz(np.deg2rad(60))*SE3.Rx(np.pi)
 mesa = SE3(125, -337, 162)*UnitQuaternion([0.0, 0.866, 0.5, 0.0]).SE3()
 ```
 
-Claro está que no es inmediata la visualización de las ternas a partir de una línea de código y es necesario iterar en RViz hasta lograr la transformación deseada. El paquete de MoveIt ofrece ciertas facilidades a la hora de definir ternas pero se abordarán más adelante. 
+No caben dudas de que no es inmediata la visualización de las ternas a partir de una línea de código y es necesario iterar en RViz hasta lograr la transformación deseada. El paquete de MoveIt ofrece ciertas facilidades a la hora de definir ternas pero se abordarán más adelante. 
 
 En el caso de las poses objetivo o robtargets, será necesario definir la configuración con la que el robot las alcanza. Resulta de utilidad evaluar las posibilidades mediante [view_pose_configs()](CobotStudio_doc.md#view_pose_configsrobt-tool-wobj).
 
@@ -219,9 +219,9 @@ Para la ejecución, se dispone de un [launcher](./mycobot_320/mycobot_320/CobotL
 ~/colcon_ws/src/mycobot_ros2/mycobot_320/mycobot_320$ python3 CobotLauncher.py scripts/Mate/Cebar_rev2.py ros
 ```
 
-Para enviarlo al robot real simplemente se reemplaza el argumento `ros` por `real`. Claro está que este caso corresponde únicamente a ejecuciones desde la Raspberry Pi del cobot.
+Para enviarlo al robot real simplemente se reemplaza el argumento `ros` por `real`.
 
-Si se desea replicar los movimientos del robot real mientras ejecuta una rutina en una instancia de RViz de una PC conectada mediante Ethernet, se debe ejecutar en esta última el script [Cobot_client.py]() y agregar el argumento adicional `--bridge` en la referencia al launcher. Adicionalmente se permite pasar como parámetro por consola una variable `speed` pensada para controlar la velocidad de las rutinas. Claro está que la programación de la rutina debe haberla tenido en consideración.
+Si se desean replicar los movimientos del robot real mientras ejecuta una rutina en una instancia de RViz de una PC conectada mediante Ethernet, se debe ejecutar en esta última el script [CobotClient.py](./mycobot_320/mycobot_320/scripts/Raspi/CobotClient.py) y agregar el argumento adicional `--bridge` en la referencia al launcher. Adicionalmente se permite pasar como parámetro por consola una variable `speed` pensada para controlar la velocidad de las rutinas. Claro está que la programación de la rutina debe haberla tenido en consideración.
 
 Ej:
 
