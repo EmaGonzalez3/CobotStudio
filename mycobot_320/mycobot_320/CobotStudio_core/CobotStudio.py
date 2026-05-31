@@ -1016,7 +1016,7 @@ if ROS_OK or TYPE_CHECKING:
             pose_start = self.cobot_tb.fkine(q_start_arm)
 
             # Generador cartesiano con SLERP y perfil trapezoidal
-            self.cobot_tb.genTrCart([pose_start, pose_goal, pose_goal], 0*np.ones(3), conf=robtarget.config)
+            self.cobot_tb.genTrCart([pose_start*tool, pose_goal*tool, pose_goal*tool], 0*np.ones(3), conf=robtarget.config, tool = tool)
             full_traj = self.cobot_tb.q_ref
 
             # Control de velocidad mediante subsampling de la trayectoria (solo brazo)
@@ -1260,7 +1260,7 @@ if ROS_OK or TYPE_CHECKING:
                 collision_free = True   # Por defecto se asume sin colisión para que el filtrado no la elimine
                 # Análisis en MoveIt
                 try:
-                    collision_free = bool(self.moveit_manager.check_collision(target, tool, wobj))
+                    collision_free = bool(self.moveit_manager._check_collision(target, tool, wobj))
                 except Exception as e:
                     print(f"Error al chequear colisión para {conf}: {e}")
 
@@ -1534,7 +1534,7 @@ if ROS_OK or TYPE_CHECKING:
                             
             # Incluso en trayectorias cortas, se quiere un mínimo de skip
             BASE_SKIP = 5
-            LINEAR_FACTOR = 0.3  # Ajuste de sensibilidad lineal
+            LINEAR_FACTOR = 0.5  # Ajuste de sensibilidad lineal
 
             variable_skip = round(safe_speed * LINEAR_FACTOR)
             skip = BASE_SKIP + variable_skip    # Min: 5 Máx: 35

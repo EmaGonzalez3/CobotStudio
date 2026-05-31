@@ -1,19 +1,21 @@
-from scripts.CobotStudio import (
-    RobTarget,
-    SimManager,
-    MyCobotController,
-    checkQ,
-    checkPose,
-    pose_to_matrix,
-    TCP_4puntos,
-    TCP_4puntos_extendido,
-    joystick_adjust,
-)
-from spatialmath import SE3
-import numpy as np
-from DHRobotGT import myCobot320
-import time
-from pymycobot import MyCobotSocket
+# from scripts.CobotStudio import (
+#     RobTarget,
+#     SimManager,
+#     MyCobotController,
+#     checkQ,
+#     checkPose,
+#     pose_to_matrix,
+#     TCP_4puntos,
+#     TCP_4puntos_extendido,
+#     joystick_adjust,
+# )
+# from spatialmath import SE3
+# import numpy as np
+# from DHRobotGT import myCobot320
+# import time
+# from pymycobot import MyCobotSocket
+
+from Cobot_sdk import *
 
 def generar_q_random():
     """
@@ -22,7 +24,7 @@ def generar_q_random():
     # Ejemplo: valores entre -pi y pi
     return np.random.uniform(-np.pi, np.pi, 6).tolist()
 
-cob = MyCobotController()
+# cob = MyCobotController()
 
 pose_1 = [104.7, -153.7, 180, -91.56, -66.61, 1.86]
 pose_2 = [-102.4, -154.7, 180, -90.35, 38.05, 0.7]
@@ -70,12 +72,26 @@ q_martes = np.rad2deg([q1, q2, q3, q4])
 # pose_0 = [139.92000000000002, -99.65199999999999, 78.73466666666667, 58.50199999999998, 69.52, -45.61000000000001]
 # pose_mod = joystick_adjust(np.deg2rad(pose_0), mover_callback=lambda r: cob.MoveJ(r, 20, SE3(), SE3()))
 pose_pick_manual = RobTarget(SE3(0, -220, 25)* SE3.Ry(-np.pi), [-1, 1, 1]) 
+pose_pick_manual2 = RobTarget(SE3(215.46, -190.81, 135.07) * SE3.RPY(np.deg2rad([146.27, -11.84, -146.69])), [-1, 1, -1])
 wobj = SE3()
 pinza = SE3(-1.71381642, 106.90735789, 28.32702833) * SE3.Rx(-np.pi/2)
 # pinza = SE3(-2.84011157, 115.08057356, 22.28604936) * SE3.Rx(-np.pi/2)
 # ''' Movimiento alrededor del TCP'''
-cobot = MyCobotController()
-angle = -5
-while angle >= -20:
-    cobot.MoveJ(pose_pick_manual.relTool(0, 0, 0, angle, angle, angle), 30, pinza, wobj)
-    angle -= 5
+def run(robot: BaseRobotController, **kwargs):
+    robot.GripperState(0)
+    angle = 0
+    robot.MoveJ(pose_pick_manual2.relTool(0, 0, 0, angle, angle, angle), 80, pinza, wobj)
+    time.sleep(3)
+    # Aisla un solo eje para ver cuál introduce la oscilación
+    robot.MoveL(pose_pick_manual2.relTool(0, 0, 0, -25, 0, 0), 10, pinza, wobj)
+    robot.MoveL(pose_pick_manual2.relTool(0, 0, 0, -25, -25, 0), 10, pinza, wobj)  
+    robot.MoveL(pose_pick_manual2.relTool(0, 0, 0, -25, -25, -25), 10, pinza, wobj)
+    robot.MoveL(pose_pick_manual2.relTool(0, 0, 0, angle, angle, angle), 10, pinza, wobj)
+    robot.MoveL(pose_pick_manual2.relTool(0, 0, 0, 25, 25, 25), 10, pinza, wobj)
+    # while angle >= -25:
+    #     robot.MoveJ(pose_pick_manual2.relTool(0, 0, 0, angle, angle, angle), 100, pinza, wobj)
+    #     angle -= 5
+    # angle = -25
+    # while angle <= 25:
+    #     robot.MoveJ(pose_pick_manual2.relTool(0, 0, 0, angle, angle, angle), 100, pinza, wobj)
+    #     angle += 5

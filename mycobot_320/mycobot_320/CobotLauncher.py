@@ -98,12 +98,9 @@ def load_routine_module(file_path: Path):
 def _get_angles_safe(robot) -> Optional[list]:
     """Helper para leer ángulos de forma segura independientemente de la implementación del driver."""
     try:
-        # Lectura mediante la API (mc)
+        # Lectura mediante pymycobot
         if hasattr(robot, "mc") and hasattr(robot.mc, "get_angles"):
             return robot.mc.get_angles()
-        # Intento 2: Método propio del controlador
-        # if hasattr(robot, "get_angles"):
-        #     return robot.get_angles()
     except Exception:
         pass
     return None
@@ -141,8 +138,8 @@ def initialize_environment(mode: str, project_path: Path, enable_bridge: bool):
             server.start()
 
             # Observer para replicar comandos de gripper
-            if hasattr(robot, "set_server_observer"):
-                robot.set_server_observer(server)
+            if hasattr(robot, "_set_server_observer"):
+                robot._set_server_observer(server)
             
             print("\n" + "="*50)
             print("   MODO BRIDGE ACTIVO: ESPERANDO CLIENTE ROS2")

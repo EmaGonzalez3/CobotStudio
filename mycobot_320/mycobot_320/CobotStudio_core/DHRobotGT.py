@@ -90,6 +90,8 @@ class DHRobotGT(DHRobot):
 
         if np.isclose(delta_max, 0.0):
             print("No hay ninguna coordenada con desplazamiento para normalizar.")
+            # Si no hay desplazamiento se utiliza un perfil trivial
+            s_profile = np.array([[0,1]])
         else:
             # Perfil del interpolador
             s_profile = (q_aux[idx,:] - q_aux[idx,0]) / delta_max
@@ -156,7 +158,7 @@ class DHRobotGT(DHRobot):
 
         return self.t_ref, self.q_ref, self.qd_ref, self.qdd_ref
 
-    def genTrCart(self,POSE_dest,Td, conf = [1, 1, 1], plot = False):
+    def genTrCart(self,POSE_dest,Td, conf = [1, 1, 1], tool = SE3(), plot = False):
     
         """
         Genera la trayectoria cartesiana para un conjunto de puntos de paso. Utiliza el perfil del interpolador trapezoidal
@@ -165,6 +167,8 @@ class DHRobotGT(DHRobot):
         Args:
           POSE_dest : Lista con las POSES de paso.
           Td : tiempos deseados de cada movimiento.
+          conf : Configuración articular para la cinemática inversa.
+          tool : Transformación del TCP con respecto a la brida.
 
         Returns:
           t_ref : Vector de tiempo de referencia.
@@ -195,9 +199,9 @@ class DHRobotGT(DHRobot):
             Tj = np.max([Td[i], 2 * self.tacc])
 
             # Interpolación trapezoidal de las poses
-            POSEA_q = self.ikine(POSEA, conf)[0]
-            POSEB_q = self.ikine(POSEB, conf)[0]
-            POSEC_q = self.ikine(POSEC, conf)[0]
+            POSEA_q = self.ikine(POSEA*tool.inv(), conf)[0]
+            POSEB_q = self.ikine(POSEB*tool.inv(), conf)[0]
+            POSEC_q = self.ikine(POSEC*tool.inv(), conf)[0]
             s_prof, qd_aux, qdd_aux, _ = self.interpoladorTrapezoidal(POSEA_q, POSEB_q, POSEC_q, Tj, return_s=True)
 
             #Convertir el s local al tiempo global
@@ -222,7 +226,7 @@ class DHRobotGT(DHRobot):
         # Obtener variables articulares y luego velocidades y aceleraciones diferenciando
         q = np.zeros((len(POSES), self.nlinks))
         for i in range(len(POSES)):
-            q[i,:], _ = self.ikine(POSES[i], conf)
+            q[i,:], _ = self.ikine(POSES[i]*tool.inv(), conf)
 
         qd = np.diff(q, axis=0) / self.Ts
         qd = np.vstack([qd, np.zeros(self.nlinks,)])
